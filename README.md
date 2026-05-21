@@ -1,5 +1,7 @@
 # xconf
 
+[![CI](https://github.com/gopherex/xconf/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/gopherex/xconf/actions/workflows/ci.yml)
+
 Typed, declarative configuration for Go. Fluent schema DSL, automatic env
 naming, runtime loading from env/JSON/YAML/TOML, and `go generate`-based
 codegen of a typed `Config` struct + a zero-reflection `LoadFromEnv` entry
