@@ -199,6 +199,36 @@ func (o *options) loadDotEnv() error {
 	return nil
 }
 
+// envSectionPresent reports whether any environment (or .env) variable sets a
+// key under the section path — the presence signal that materializes an
+// optional (pointer) section.
+func (o *options) envSectionPresent(path []string) bool {
+	prefix := strings.ToUpper(strings.Join(path, "_")) + "_"
+	if o.envPrefix != "" {
+		prefix = o.envPrefix + "_" + prefix
+	}
+
+	if o.envVars != nil {
+		for name := range o.envVars {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+	} else {
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, prefix) {
+				return true
+			}
+		}
+	}
+	for name := range o.dotenv {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (o *options) lookupEnv(name string) (string, bool) {
 	if o.envPrefix != "" {
 		name = o.envPrefix + "_" + name
@@ -242,18 +272,27 @@ func bindStruct(rv reflect.Value, path []string, fileMap map[string]any, o *opti
 
 		// Nested struct (but not time.Time) => recurse. A ,squash field keeps
 		// the current path and fileMap level (fields are flattened).
+		//
+		// A POINTER to a struct is an optional section: it is materialized
+		// (and its defaults/validation apply) only when the section is
+		// present — a submap in a file, or any env/.env variable under its
+		// path. Absent => the pointer stays nil and the subtree is skipped.
 		if elemT.Kind() == reflect.Struct && elemT != timeType {
-			if isPtr && fv.IsNil() {
-				fv.Set(reflect.New(elemT))
-			}
-			if isPtr {
-				fv = fv.Elem()
-			}
 			cpath := path
 			sub := fileMap
 			if !ms.squash {
 				cpath = append(append([]string(nil), path...), ms.name)
 				sub, _ = fileMap[ms.name].(map[string]any)
+			}
+			if isPtr {
+				_, inFile := fileMap[ms.name]
+				if fv.IsNil() && !ms.squash && !inFile && !o.envSectionPresent(cpath) {
+					continue
+				}
+				if fv.IsNil() {
+					fv.Set(reflect.New(elemT))
+				}
+				fv = fv.Elem()
 			}
 			if err := bindStruct(fv, cpath, sub, o); err != nil {
 				return err
