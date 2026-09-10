@@ -286,6 +286,52 @@ type Source interface {
 }
 ```
 
+## Struct configuration (`pkg/structconf`)
+
+`structconf.Load[T]` loads structs using `mapstructure`, `default`, and
+`validate` tags. Validation runs after binding, with precedence
+`default < files < .env < environment`.
+
+```go
+type Config struct {
+    URL   string   `mapstructure:"url" validate:"omitempty,url"`
+    Port  int      `mapstructure:"port" validate:"omitempty,min=1,max=65535"`
+    Links []string `mapstructure:"links" validate:"omitempty,dive,omitempty,url"`
+}
+
+cfg, err := structconf.Load[Config](structconf.WithYAMLFile("config.yaml"))
+```
+
+`omitempty` skips the remaining rules for the current value when it is empty.
+Its presence semantics follow
+[go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10#hdr-Omit_Empty):
+
+| Value | Skipped by `omitempty`? |
+| --- | --- |
+| Empty string, zero number/duration, `false` | Yes |
+| Zero array, zero struct, zero `time.Time` | Yes |
+| Nil slice, map, pointer, interface | Yes |
+| Allocated empty slice or map (`[]`, `{}`) | No |
+| Non-nil pointer/interface containing a zero scalar or struct | No |
+| Interface/pointer resolving to a nil value | Yes |
+| String containing only spaces | No |
+
+An empty value explicitly supplied by a source overrides a default and is
+then checked using these rules. `omitempty` does not suppress binding errors.
+A zero struct with `omitempty` skips validation of its fields; a present
+pointer section still validates its fields. Absent pointer fields/sections
+retain the loader's optional behavior and are not validated.
+
+Rules run left to right: `omitempty,url` accepts `""`, while `url,omitempty`
+fails before reaching `omitempty`. Likewise, place conditional requirements
+first, for example `required_if=Mode tls,omitempty,url`.
+
+`dive` applies subsequent rules to each slice/array element or map value, at
+any nesting depth. `omitempty,dive,url` makes the collection optional;
+`dive,omitempty,url` makes each element optional. An omitted element does not
+skip its siblings. `omitempty,hostname|ip` is valid; `omitempty` itself must
+be a separate comma-delimited rule, not an alternative inside `|`.
+
 ## Validators (`pkg/validate`)
 
 Typed via generics. Mismatched T fails at compile time.
@@ -336,6 +382,7 @@ xconf/
     load/                        runtime sources + loader
     codegen/                     Render(*Schema) → Go source
     structtag/                   schema-from-struct-tags
+    structconf/                  load and validate plain tagged structs
   example/
     redislib/                    external-library schema example
     app/                         consumer schema + generated file

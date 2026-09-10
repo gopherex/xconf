@@ -25,6 +25,14 @@
 //	// file + env (env wins):
 //	cfg, err := structconf.Load[Config](structconf.WithYAMLFile("config.yaml"))
 //
+// Validation runs after binding. The omitempty rule skips subsequent rules for
+// zero scalar/array/struct values and nil collections or pointers/interfaces.
+// Allocated empty slices/maps and non-nil pointers/interfaces to zero scalars
+// remain subject to validation. Whitespace-only strings are not empty.
+// Rules run left to right; omitempty must precede the rules it guards. With
+// dive, it applies independently at the collection or element level, including
+// nested collections. A zero struct with omitempty skips its child fields.
+//
 // Precedence per field: tag default < YAML file value < environment variable.
 //
 // Env var names are derived from the dotted mapstructure path, upper-cased with

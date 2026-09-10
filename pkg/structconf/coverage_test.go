@@ -71,7 +71,7 @@ type Base struct {
 }
 type Embeds struct {
 	Base `mapstructure:",squash"`
-	Anon              // anonymous, no tag => squashed
+	Anon        // anonymous, no tag => squashed
 	Top  string `mapstructure:"top" default:"t"`
 }
 type Anon struct {
@@ -97,9 +97,9 @@ func TestSquash(t *testing.T) {
 // --- dive + unique ---
 
 type Coll struct {
-	Hosts   []string `mapstructure:"hosts" validate:"dive,hostname"`
-	Ports   []int    `mapstructure:"ports" validate:"unique,dive,min=1,max=65535"`
-	Modes   []string `mapstructure:"modes" validate:"dive,oneof=a b c"`
+	Hosts []string `mapstructure:"hosts" validate:"dive,hostname"`
+	Ports []int    `mapstructure:"ports" validate:"unique,dive,min=1,max=65535"`
+	Modes []string `mapstructure:"modes" validate:"dive,oneof=a b c"`
 }
 
 func TestDiveOK(t *testing.T) {

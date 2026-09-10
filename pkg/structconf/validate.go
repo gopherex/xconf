@@ -29,13 +29,9 @@ func validateStruct(rv reflect.Value, path []string) error {
 			continue
 		}
 		fv := rv.Field(i)
-		ft := sf.Type
-		if ft.Kind() == reflect.Pointer {
-			if fv.IsNil() {
-				continue
-			}
-			fv = fv.Elem()
-			ft = ft.Elem()
+		// An absent pointer remains an optional field/section, as in loading.
+		if fv.Kind() == reflect.Pointer && fv.IsNil() {
+			continue
 		}
 
 		cpath := path
@@ -43,19 +39,8 @@ func validateStruct(rv reflect.Value, path []string) error {
 			cpath = append(append([]string(nil), path...), ms.name)
 		}
 
-		if ft.Kind() == reflect.Struct && ft != timeType {
-			if err := validateStruct(fv, cpath); err != nil {
-				return err
-			}
-			continue
-		}
-
-		tag, has := sf.Tag.Lookup("validate")
-		if !has || strings.TrimSpace(tag) == "" {
-			continue
-		}
-		if err := runRules(fv, rv, tag); err != nil {
-			return fmt.Errorf("%s: %w", strings.Join(cpath, "."), err)
+		if err := runRules(fv, rv, sf.Tag.Get("validate"), cpath); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -64,30 +49,21 @@ func validateStruct(rv reflect.Value, path []string) error {
 // runRules applies a go-playground-style validate tag. Top-level separator is
 // comma (AND). A `dive` token switches remaining rules to per-element mode for
 // slices/arrays/maps. A rule containing '|' is an OR group.
-func runRules(fv, parent reflect.Value, tag string) error {
-	tokens := splitTopLevel(tag)
-	for i, tok := range tokens {
-		if tok == "dive" {
-			return diveInto(fv, parent, tokens[i+1:])
-		}
-		if err := runToken(fv, parent, tok); err != nil {
-			return err
-		}
-	}
-	return nil
+func runRules(fv, parent reflect.Value, tag string, path []string) error {
+	return runRuleList(fv, parent, splitTopLevel(tag), path)
 }
 
 func diveInto(fv, parent reflect.Value, elemRules []string) error {
 	switch fv.Kind() {
 	case reflect.Slice, reflect.Array:
 		for i := 0; i < fv.Len(); i++ {
-			if err := runRuleList(fv.Index(i), parent, elemRules); err != nil {
+			if err := runRuleList(fv.Index(i), parent, elemRules, nil); err != nil {
 				return fmt.Errorf("[%d]: %w", i, err)
 			}
 		}
 	case reflect.Map:
 		for _, k := range fv.MapKeys() {
-			if err := runRuleList(fv.MapIndex(k), parent, elemRules); err != nil {
+			if err := runRuleList(fv.MapIndex(k), parent, elemRules, nil); err != nil {
 				return fmt.Errorf("[%v]: %w", k.Interface(), err)
 			}
 		}
@@ -97,27 +73,76 @@ func diveInto(fv, parent reflect.Value, elemRules []string) error {
 	return nil
 }
 
-func runRuleList(fv, parent reflect.Value, tokens []string) error {
-	for _, tok := range tokens {
-		if tok == "dive" {
-			return diveInto(fv, parent, nil) // nested dive: no further rules supported
+// runRuleList is shared by fields and collection elements. Control tags are
+// evaluated in order, before descending into a struct or collection.
+func runRuleList(fv, parent reflect.Value, tokens []string, path []string) error {
+	fv, present := validationValue(fv)
+	for i, tok := range tokens {
+		switch tok {
+		case "omitempty":
+			if !present {
+				return nil
+			}
+			continue
+		case "dive":
+			return ruleErrorAtPath(path, diveInto(fv, parent, tokens[i+1:]))
 		}
-		if err := runToken(fv, parent, tok); err != nil {
-			return err
+		if err := runToken(fv, parent, tok, present); err != nil {
+			return ruleErrorAtPath(path, err)
 		}
+	}
+	if fv.Kind() == reflect.Struct && fv.Type() != timeType {
+		return validateStruct(fv, path)
 	}
 	return nil
 }
 
-func runToken(fv, parent reflect.Value, rule string) error {
+// validationValue unwraps pointers/interfaces while preserving explicit
+// presence. Like go-playground's omitempty, nil collections are empty but
+// allocated empty collections are present; a supplied pointer/interface to a
+// zero scalar is present too. A typed nil inside an interface is still empty.
+func validationValue(fv reflect.Value) (reflect.Value, bool) {
+	nullable := false
+	for fv.Kind() == reflect.Pointer || fv.Kind() == reflect.Interface {
+		if fv.IsNil() {
+			return fv, false
+		}
+		nullable = true
+		fv = fv.Elem()
+	}
+	if !fv.IsValid() {
+		return fv, false
+	}
+	switch fv.Kind() {
+	case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+		return fv, !fv.IsNil()
+	default:
+		return fv, nullable || !fv.IsZero()
+	}
+}
+
+func ruleErrorAtPath(path []string, err error) error {
+	if err == nil || len(path) == 0 {
+		return err
+	}
+	return fmt.Errorf("%s: %w", strings.Join(path, "."), err)
+}
+
+func runToken(fv, parent reflect.Value, rule string, present bool) error {
 	if strings.Contains(rule, "|") {
+		for _, alt := range strings.Split(rule, "|") {
+			name, _, _ := strings.Cut(strings.TrimSpace(alt), "=")
+			if strings.TrimSpace(name) == "omitempty" {
+				return fmt.Errorf("omitempty must be a separate comma-delimited rule")
+			}
+		}
 		var errs []string
 		for _, alt := range strings.Split(rule, "|") {
 			alt = strings.TrimSpace(alt)
 			if alt == "" {
 				continue
 			}
-			if err := runRule(fv, parent, alt); err == nil {
+			if err := runRule(fv, parent, alt, present); err == nil {
 				return nil
 			} else {
 				errs = append(errs, err.Error())
@@ -125,21 +150,21 @@ func runToken(fv, parent reflect.Value, rule string) error {
 		}
 		return fmt.Errorf("no alternative matched (%s)", strings.Join(errs, "; "))
 	}
-	return runRule(fv, parent, rule)
+	return runRule(fv, parent, rule, present)
 }
 
 // runRule applies a single rule token (name or name=param) to fv.
-func runRule(fv, parent reflect.Value, rule string) error {
+func runRule(fv, parent reflect.Value, rule string, present bool) error {
 	rule = strings.TrimSpace(rule)
 	name, param, _ := strings.Cut(rule, "=")
 	name = strings.TrimSpace(name)
 	param = strings.TrimSpace(param)
 
 	switch name {
-	case "", "omitempty", "structonly", "dive":
+	case "", "structonly", "dive":
 		return nil
 	case "required":
-		if fv.IsZero() {
+		if !present {
 			return fmt.Errorf("required")
 		}
 		return nil
