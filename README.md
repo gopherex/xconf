@@ -10,16 +10,16 @@ contains the previous API. The rewritten API stays on v1 and requires migration.
 
 ## Quick start
 
-Run the checkout example:
+Install the library and the integrations used below in your application's Go module:
 
 ```sh
-git clone https://github.com/gopherex/xconf.git
-cd xconf/example
-APP_SERVER_PORT=7000 GOWORK=off go run . -once
+go get github.com/gopherex/xconf@master \
+  github.com/gopherex/xconf/contrib/sources/file@master \
+  github.com/gopherex/xconf/contrib/sources/env@master \
+  github.com/gopherex/xconf/contrib/decoders/json@master
 ```
 
-Output: `version=1 server=127.0.0.1:7000`. Omit `-once` and edit `config.json` for
-live reload. The environment override keeps priority over the file.
+Use `@master` until the rewritten API has a tagged release.
 
 A complete application reading `config.json`, an optional local file and environment:
 
@@ -33,8 +33,9 @@ import (
 
     sp "github.com/gopherex/schemapb/go/schemapb"
     "github.com/gopherex/xconf"
+    jsondecode "github.com/gopherex/xconf/contrib/decoders/json"
     "github.com/gopherex/xconf/contrib/sources/env"
-    jsonconf "github.com/gopherex/xconf/contrib/sources/json"
+    "github.com/gopherex/xconf/contrib/sources/file"
 )
 
 type Config struct {
@@ -50,8 +51,8 @@ func main() {
         log.Fatal(err)
     }
     cfg, err := xconf.LoadAs[Config](context.Background(), schema,
-        jsonconf.File("config.json"),
-        xconf.Optional(jsonconf.File("config.local.json")),
+        file.New("config.json", jsondecode.Decode),
+        xconf.Optional(file.New("config.local.json", jsondecode.Decode)),
         env.New(env.Prefix("APP_")),
     )
     if err != nil {
@@ -61,7 +62,13 @@ func main() {
 }
 ```
 
-With `{"server":{"port":9090}}`, the result is `127.0.0.1:9090`.
+Save this as `main.go` and create `config.json`:
+
+```json
+{"server":{"port":9090}}
+```
+
+Run `go run .` to get `127.0.0.1:9090`.
 `APP_SERVER_PORT=7000` overrides the port; `APP_SERVER_PORT=70000` fails validation.
 An existing `*schemapb.Schema` can be passed directly instead of reflecting a struct.
 
@@ -116,7 +123,7 @@ Using the imports and `Config` above:
 ```go
 func watch(ctx context.Context, schema *sp.Schema) error {
     runtime, err := xconf.OpenAs[Config](ctx, schema,
-        jsonconf.File("config.json"), env.New(env.Prefix("APP_")),
+        file.New("config.json", jsondecode.Decode), env.New(env.Prefix("APP_")),
     )
     if err != nil {
         return err
