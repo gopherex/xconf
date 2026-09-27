@@ -4,9 +4,9 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v0.0.0-20260927201943-2e4130a88c4c
-	github.com/gopherex/xconf v1.2.0
-	github.com/gopherex/xconf/contrib/sources/env v1.2.0
-	github.com/gopherex/xconf/contrib/sources/json v1.2.0
+	github.com/gopherex/xconf v1.2.1
+	github.com/gopherex/xconf/contrib/sources/env v1.2.1
+	github.com/gopherex/xconf/contrib/sources/json v1.2.1
 )
 
 require (
@@ -14,8 +14,8 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/cbroglie/mustache v1.4.0 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
-	github.com/gopherex/xconf/contrib/decoders/json v1.2.0 // indirect
-	github.com/gopherex/xconf/contrib/sources/file v1.2.0 // indirect
+	github.com/gopherex/xconf/contrib/decoders/json v1.2.1 // indirect
+	github.com/gopherex/xconf/contrib/sources/file v1.2.1 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
 	golang.org/x/mod v0.38.0 // indirect

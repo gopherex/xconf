@@ -2,7 +2,7 @@ module github.com/gopherex/xconf/contrib/decoders/json
 
 go 1.25.7
 
-require github.com/gopherex/xconf v1.2.0
+require github.com/gopherex/xconf v1.2.1
 
 require (
 	cel.dev/expr v0.25.1 // indirect
