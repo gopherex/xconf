@@ -1,156 +1,344 @@
 # xconf
 
-Configuration loading and live reload against a [schemapb](https://github.com/gopherex/schemapb) schema.
-This is the v1 API. The module remains `github.com/gopherex/xconf`; the previous DSL,
-code generator and `pkg/structconf` API are removed. Existing applications can stay
-on their pinned releases until migrated.
+Load configuration from explicit sources, merge them in order, and validate the
+result against a [schemapb](https://github.com/gopherex/schemapb) schema. Keep a
+validated snapshot or subscribe to changes while the application is running.
 
-## Contract
-
-Sources supply partial raw layers, ordered from lowest to highest priority.
-Objects and maps merge recursively. Scalars, null and lists replace previous values.
-Explicit zero, false, empty string and empty list are present values. An empty object
-preserves lower keys; `Edit{Kind: Replace}` clears/replaces an object. `Delete` removes
-a key from the assembled input; a schema default can subsequently restore it.
-Changing a OneOf discriminator replaces the previous variant's entire object.
-
-Only after all layers merge does schemapb run defaults, coercion, normalization,
-computed fields, validation and canonicalization. Enable coercion in the schema
-for textual sources (reflection already enables it). Unknown-field policy belongs
-to the schema's strict setting. An absent section is created only with an explicit
-Object/Ref `default={}`. Null is never treated as absence.
-
-## Loading
-
-```go
-schema, err := sp.ReflectType[Config](sp.ID("app", "config", sp.Ver(1, 0, 0)))
-if err != nil { return err }
-snapshot, err := xconf.Load(ctx, schema,
-    yaml.File("config.yaml"),
-    xconf.Optional(yaml.File("config.local.yaml")),
-    env.New(env.Prefix("APP_")),
-)
-if err != nil { return err }
-cfg, err := xconf.Decode[Config](snapshot)
+```text
+config file → local overrides → environment → flags
+                         ↓
+                  merge raw values
+                         ↓
+             schemapb defaults and validation
+                         ↓
+              typed config / live snapshot
 ```
 
-`LoadAs[T]` returns the decoded configuration directly. `Load` retains diagnostics,
-source revisions and `Explain("db", "port")` metadata. Explanation records contain
-source writes and schema operations, never values. Paths use JSON pointer encoding;
-map keys containing dots or slashes remain unambiguous.
+You choose the sources and their priority. xconf handles loading, merging,
+validation, reloads and provenance. Your application decides how to apply a new
+configuration to its components.
 
-`New(schema, compileOptions...)` builds a reusable Loader with custom schemapb
-formats or CEL cost limits. Its Load/Open methods reuse the compiled engine.
+- Define a schema from a Go struct or supply an existing `*schemapb.Schema`.
+- Combine files, environment variables, flags and remote stores.
+- Reject invalid updates while keeping the last valid configuration.
+- Inspect which source or schema operation supplied a field.
+- Import only the source and decoder modules you need.
 
-A runnable typed example is in `example/`: run `GOWORK=off go run . -once` there.
-Run without `-once` and edit `config.json` to see reloads; `APP_SERVER_PORT` overrides
-its port. The example module is tested by CI and excluded from library release tags.
+## Requirements and availability
 
-## Live configuration
+Go **1.25.7 or newer**. The module path is `github.com/gopherex/xconf`.
+Each integration under `contrib/` has its own `go.mod` and release tag.
 
-`Open` returns an untyped runtime; `OpenAs[T]` also checks decoding before publishing.
-`TypedRuntime.Current()` returns `(T, error)` with independent maps and slices.
-`Snapshot()` is immutable through its public API; Baked/Report/Validation accessors
-and Decode copy owned state. Custom decode hooks should be deterministic.
+**This README describes the rewritten API on `master`.** The published `v1.1.2`
+release contains the previous API; the new contrib modules are not yet released.
+Until the next coordinated v1 release, use the checkout example below. When adding
+released integrations to an application, select matching root and contrib versions.
 
-```go
-runtime, err := xconf.OpenAs[Config](ctx, schema,
-    yaml.File("config.yaml"), env.New(env.Prefix("APP_")),
-)
-if err != nil { return err }
-defer runtime.Close()
-for event := range runtime.Subscribe(ctx) {
-    if event.Err != nil { /* retain the currently applied settings */ continue }
-    cfg, err := xconf.Decode[Config](event.Snapshot)
-    if err != nil { return err }
-    _ = cfg // application owns component reconfiguration
+## Try it
+
+```sh
+git clone https://github.com/gopherex/xconf.git
+cd xconf/example
+GOWORK=off go run . -once
+```
+
+The [example](example/main.go) reads [config.json](example/config.json), then applies
+variables prefixed with `APP_`:
+
+```sh
+APP_SERVER_PORT=7000 GOWORK=off go run . -once
+```
+
+This prints `version=1 server=127.0.0.1:7000`. Run without `-once` and edit
+`config.json` to see live updates. An environment override keeps its priority over
+subsequent file changes. Press Ctrl+C to stop.
+
+## Load a typed configuration
+
+Given `config.json`:
+
+```json
+{
+  "server": {
+    "port": 9090
+  }
 }
 ```
 
-Watchers register before the initial read. Initial failure aborts Open. Reloads are
-serialized, rebuild from source layers and retain the last valid snapshot on read,
-merge, validation or decode failure. `Reload(ctx)` requests a manual rebuild.
-Source removal therefore reveals lower-priority values. Changes during a rebuild
-schedule another pass. Notifications are coalesced over a 20ms window.
+This complete program reads the file, overlays the environment, applies defaults
+and validates the resulting configuration:
 
-Subscribers receive the current snapshot immediately. Delivery never blocks reload;
-each subscriber retains only its latest event. Changed paths compare consecutive
-published snapshots, so a subscriber skipping versions must reconcile full state.
-An error event includes the last valid snapshot. Successful unchanged reads do not
-increment the version; provenance/revision changes do, even if values are identical.
-Recovery after a failed read emits a successful event even when the version stays unchanged.
-Cancellation closes subscriptions. Close cancels reads and stops watchers; source
-implementations must honor context. Atomic publication is process-local, not a
-transaction across unrelated external stores.
+```go
+package main
 
-## Sources
+import (
+    "context"
+    "fmt"
+    "log"
 
-Each contrib is a separate Go module. Import only the integrations you use:
+    sp "github.com/gopherex/schemapb/go/schemapb"
+    "github.com/gopherex/xconf"
+    "github.com/gopherex/xconf/contrib/sources/env"
+    jsonconf "github.com/gopherex/xconf/contrib/sources/json"
+)
 
-| Module under `contrib/sources/` | Input |
+type Config struct {
+    Server struct {
+        Host string `json:"host" schemapb:"default=127.0.0.1"`
+        Port int64  `json:"port" schemapb:"default=8080;gte=1;lte=65535"`
+    } `json:"server" schemapb:"default={}"`
+}
+
+func main() {
+    schema, err := sp.ReflectType[Config](sp.ID("app", "config", sp.Ver(1, 0, 0)))
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    cfg, err := xconf.LoadAs[Config](context.Background(), schema,
+        jsonconf.File("config.json"),
+        xconf.Optional(jsonconf.File("config.local.json")),
+        env.New(env.Prefix("APP_")),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("%s:%d\n", cfg.Server.Host, cfg.Server.Port)
+}
+```
+
+The result is `127.0.0.1:9090`. With `APP_SERVER_PORT=7000`, it becomes
+`127.0.0.1:7000`. An out-of-range port fails validation.
+
+`default={}` makes an absent `server` section exist so its child defaults can run.
+Reflection enables coercion, allowing an environment string such as `"7000"` to
+become an integer. If you construct a schema directly, enable coercion for textual
+inputs. Defaults, formats, computed fields and validation rules belong to schemapb.
+
+`Optional` suppresses only `xconf.ErrNotFound`. A missing local override is fine;
+invalid syntax, permission errors and unavailable remote stores still fail loading.
+xconf does not search for configuration files or read CLI arguments implicitly.
+
+## Source priority and merging
+
+Sources are ordered **lowest priority first, highest priority last**. Each source
+supplies a partial layer. Defaults and validation run once, after all layers merge.
+
+| Later input | Effect |
 | --- | --- |
-| `json` | JSON object, exact numeric tokens |
-| `yaml` | One YAML mapping, aliases supported with bounded expansion |
-| `toml` | TOML document |
-| `env` | Process or injected environment, schema-based names |
-| `dotenv` | .env file; does not modify process environment |
-| `flags` | Explicit argument slice and name-to-path bindings |
-| `file` | Custom document decoder and file lifecycle |
-| `fs` | Any `fs.FS`, including embedded defaults |
-| `http` | HTTP document with ETag / Last-Modified revalidation |
-| `directory` | One string value per file, including Docker/Kubernetes secrets |
-| `s3` | S3-compatible object storage, optional pinned version |
-| `vault` | Vault KV v2 object, optional pinned version |
-| `nats` | One document in a JetStream KV key, native watch |
-| `consul` | One document or a prefix of KV fields, blocking-query watch |
-| `etcd` | One document in an etcd v3 key, revision watch |
-| `kubernetes` | Named ConfigMap/Secret data or document, API watch |
-| `pflag` | Snapshot of explicitly changed pflag/Cobra flags |
-| `reader` | Repeatable reader factory or captured stream |
-| `envfile` | Explicit `*_FILE` variables pointing to secret files |
+| Object or map | Recursively merges keys with the earlier object |
+| Scalar or list | Replaces the earlier value; lists are not appended |
+| `0`, `false`, `""`, `[]` | Overrides the earlier value explicitly |
+| `null` | Replaces the earlier value; schema nullability still applies |
+| `{}` | Preserves earlier object keys |
+| `Edit{Kind: xconf.Replace}` | Replaces a whole object, including with `{}` |
+| `Edit{Kind: xconf.Delete}` | Removes a key from merged input; a schema default may restore it |
 
-Transport-independent decoders are separate modules at `contrib/decoders/json`,
-`contrib/decoders/yaml` and `contrib/decoders/toml`. Each exports `Decode` with the
-`xconf.Decoder` signature. The `sources/json`, `sources/yaml` and `sources/toml`
-modules retain convenient `File` constructors and forward `Decode` to these decoders.
-For example, `http.New(client, url, json.Decode)` and
-`s3.New(client, bucket, key, yaml.Decode)` use the same schema pipeline as local files.
-Source adapters share bounded reads and location/revision metadata handling through
-`internal/document`, an internal package of the root module. The public decoder
-contract remains `xconf.Decoder`; each source and decoder integration has its own
-`contrib` module.
+Changing a OneOf discriminator replaces the previous variant's whole object.
+Unknown fields follow the schema's strictness setting. Null is never interpreted
+as a missing value.
 
-See [source integration details](docs/sources.md) for construction, authentication,
-reload, missing-data behavior and projected-volume semantics.
+Every reload reads complete source layers again. If a higher-priority source stops
+providing a field, a lower-priority value or schema default becomes visible.
 
-Files poll every 250ms, including rename/recreation and recovery after invalid reads.
-`file.Interval(0)` disables watching; `file.MaxBytes` changes the default 8MiB limit.
-`Optional` ignores only `ErrNotFound`, never invalid syntax, permissions or outages.
-`Poll(source, interval)` adds polling to any source. Static env/flags change only on
-manual reload or polling; they do not install process-global watchers.
+## Live reload and subscriptions
 
-Env names derive from schema paths (`db.host` -> `APP_DB_HOST`). `env.Bind` maps an
-exact name to a path; `env.Split` enables explicit list delimiters, otherwise
-containers use JSON syntax. Empty scalar strings are preserved; empty split lists
-are empty lists. `env.Strict()` rejects unknown names under a nonempty prefix.
-Ambiguous names and overlapping parent/child inputs are errors. If the same path
-has scalar and container variants in OneOf, supply the whole variant as JSON. YAML merge keys and
-non-string mapping keys are rejected. Flags require explicit values, including bools;
-repeated flags use the last value. No implicit file search or CLI globals. Dotenv interpolation follows godotenv
-syntax inside that document; it does not expand against or modify process env.
+With the same `Config` and schema, use `OpenAs` instead of `LoadAs`. The following
+function uses the imports from the loading example:
 
-`Source.Read(ctx, schema)` returns a whole Layer, including optional location/revision
-metadata and explicit edits. It receives a schema copy and must return owned data.
-`Watcher.Watch` synchronously registers invalidations and returns a cleanup function.
-`SourceFunc` adapts custom readers; `NewMemory` supplies concurrent test/override data.
+```go
+func watch(ctx context.Context, schema *sp.Schema) error {
+    runtime, err := xconf.OpenAs[Config](ctx, schema,
+        jsonconf.File("config.json"),
+        env.New(env.Prefix("APP_")),
+    )
+    if err != nil {
+        return err
+    }
+    defer runtime.Close()
 
-Source error strings omit provider payloads; explicit Unwrap exposes the original
-cause for applications that need it. Raw Baked and validation diagnostics are explicit
-accessors and may contain secrets: do not log them as a configuration dump.
+    for event := range runtime.Subscribe(ctx) {
+        if event.Err != nil {
+            log.Printf("configuration update rejected: %v", event.Err)
+            continue
+        }
+        cfg, err := xconf.Decode[Config](event.Snapshot)
+        if err != nil {
+            return err
+        }
+        fmt.Printf("version=%d server=%s:%d\n",
+            event.Snapshot.Version(), cfg.Server.Host, cfg.Server.Port)
+        // Apply cfg to the application's components here.
+    }
+    return nil
+}
+```
 
-## Development and release
+Pass a cancellable context, such as `signal.NotifyContext`, to stop the loop.
+`Subscribe` immediately delivers the current snapshot, then subsequent updates.
+`runtime.Current()` returns the current typed value; `runtime.Reload(ctx)` requests
+an immediate rebuild. `Close` cancels reads and stops watchers.
 
-Go 1.25.7 or newer. `make test` builds, vets and race-tests every module with
-`GOWORK=off`. Contrib modules use local replacements inside this checkout; consumers
-use published module versions. `make release` keeps root and contrib tags aligned
-within v1. It does not migrate or upgrade downstream applications.
+- An initial read, validation or typed-decoding failure makes `OpenAs` fail.
+- A failed reload preserves the last valid snapshot and emits an error event.
+- Watchers register before the initial read. Reloads are serialized, with watch
+  notifications coalesced over a 20 ms window.
+- Slow subscribers receive the latest event, dropping intermediate events.
+  Reconcile full state: `event.Changed` compares consecutive published snapshots,
+  not necessarily the snapshots your subscriber received.
+- Unchanged values and provenance keep the same version. Source revision or
+  provenance changes can advance it even when values remain identical. Recovery
+  from a failed reload emits a successful event even if the version is unchanged.
+
+Snapshot accessors and typed decoding return independent data. Publication is
+atomic inside the process; reads across separate remote stores are not a transaction.
+The application owns connection pools, listeners and other reconfiguration work.
+
+## Available sources
+
+Import paths below start with `github.com/gopherex/xconf/contrib/sources/`.
+Each row is an independent Go module.
+
+| Module | Input | Automatic updates |
+| --- | --- | --- |
+| `json` | JSON file via `File(path)` | File polling |
+| `yaml` | YAML file via `File(path)` | File polling |
+| `toml` | TOML file via `File(path)` | File polling |
+| `file` | File with a supplied decoder | File polling |
+| `fs` | Any `fs.FS`, including embedded files | Use `xconf.Poll` for mutable filesystems |
+| `reader` | Fresh reader factory, or one captured stream | Manual reload or `xconf.Poll` |
+| `env` | Process or injected environment | Manual reload or `xconf.Poll` |
+| `dotenv` | `.env` file without modifying process environment | File polling |
+| `envfile` | Explicit `*_FILE` variables referencing secret files | File polling |
+| `directory` | One field per file, including mounted secrets | Directory polling |
+| `flags` | Explicit argument slice and field bindings | Fixed arguments |
+| `pflag` | Parsed pflag/Cobra flags marked `Changed` | Captured at construction |
+| `http` | HTTP document with ETag / Last-Modified support | Conditional polling |
+| `consul` | KV document or prefix mapped to fields | Blocking queries |
+| `etcd` | Document in an etcd v3 key | Revision watch and reconciliation |
+| `kubernetes` | ConfigMap/Secret fields or document | API watch and reconciliation |
+| `nats` | Document in a JetStream KV key | KV watch and reconciliation |
+| `s3` | S3-compatible object, optionally pinned to a version | Polling |
+| `vault` | Vault KV v2 data, optionally pinned to a version | Polling |
+
+File polling defaults to 250 ms. HTTP, S3 and Vault poll every 30 seconds.
+`xconf.Poll(source, interval)` adds periodic invalidation to a source. Source-specific
+options control timeouts, size limits, names and update intervals.
+
+Environment names follow schema paths: `server.port` becomes `APP_SERVER_PORT` with
+`env.Prefix("APP_")`. Use `env.Bind` for explicit names. Containers use JSON syntax
+unless you explicitly configure `env.Split`; scalar empty strings remain present.
+`env.Strict()` rejects unknown names under a nonempty prefix.
+
+Remote adapters accept caller-owned clients. Configure credentials, TLS and
+endpoints on those clients; closing a runtime does not close them. Vault token
+renewal remains the application's responsibility.
+
+See [source integration details](docs/sources.md) for constructors, client setup,
+watch recovery, missing-data behavior and Kubernetes permissions.
+
+## Decoders
+
+A decoder turns document bytes into a raw object and optional locations:
+
+```go
+type Decoder func([]byte) (map[string]any, map[string]xconf.Location, error)
+```
+
+| Module under `contrib/decoders/` | Format rules |
+| --- | --- |
+| `json` | One JSON object; preserves numeric tokens without a float64 intermediate |
+| `yaml` | One mapping; bounded alias expansion, source locations, no merge keys or non-string keys |
+| `toml` | TOML document; preserves date and time values |
+
+Each exports `Decode` implementing `xconf.Decoder`. Choose the transport and format
+independently. For example, using these aliases:
+
+```go
+import (
+    "net/http"
+
+    jsondecode "github.com/gopherex/xconf/contrib/decoders/json"
+    httpconf "github.com/gopherex/xconf/contrib/sources/http"
+)
+
+var remote = httpconf.New(http.DefaultClient,
+    "https://config.example/app.json", jsondecode.Decode)
+```
+
+The `sources/json`, `sources/yaml` and `sources/toml` modules provide convenient
+file constructors and also forward `Decode`. Document decoding does not apply
+schema defaults or validation. Shared bounded-reading and metadata helpers live
+in the root module's `internal/document`; there is no public document module.
+
+## Snapshots and diagnostics
+
+| API | Result |
+| --- | --- |
+| `LoadAs[T](ctx, schema, sources...)` | Validated typed configuration |
+| `Load(ctx, schema, sources...)` | Snapshot with diagnostics and provenance |
+| `Decode[T](snapshot)` | Independently owned typed value |
+| `OpenAs[T](ctx, schema, sources...)` | Live runtime that checks typed decoding before publication |
+| `Open(ctx, schema, sources...)` | Live runtime without an application struct |
+| `New(schema, compileOptions...)` | Reusable loader with schemapb compile options |
+
+Use `snapshot.Explain("server", "port")` to inspect the source writes and schema
+operations that contributed to a field. Paths are slices of segments and stringify
+as JSON pointers, so map keys containing dots or slashes remain unambiguous.
+Explanation records contain provenance, not configuration values.
+
+Source error messages omit provider payloads. Unwrapping errors or inspecting
+`Baked()`, `Report()` and `Validation()` may expose configuration data; avoid logging
+these as a dump when the configuration contains secrets.
+
+## Custom sources
+
+Implement `Source` or use `SourceFunc`. A source returns a complete, independently
+owned **partial layer** on each read. It must honor cancellation, use a stable name
+unique within the loader, and leave schema defaults and validation to xconf.
+
+```go
+var overrides = xconf.SourceFunc{
+    ID: "application-overrides",
+    ReadFunc: func(ctx context.Context, schema *sp.Schema) (xconf.Layer, error) {
+        if err := ctx.Err(); err != nil {
+            return xconf.Layer{}, err
+        }
+        return xconf.Layer{
+            Values: map[string]any{
+                "server": map[string]any{"port": int64(7000)},
+            },
+        }, nil
+    },
+}
+```
+
+`Layer` can also contain a revision, locations keyed by JSON pointer, and ordered
+`Edits` applied after `Values`. For live sources, implement `Watcher.Watch` to
+register invalidations synchronously and return a cleanup function, or wrap the
+source in `xconf.Poll`. `NewMemory` provides a concurrent mutable source for tests
+and application-controlled overrides.
+
+## Development
+
+```sh
+make test  # build, vet and race-test every module, including the example
+make tidy  # tidy dependencies in every module
+```
+
+Contrib modules use local `replace` directives so development and CI exercise the
+current checkout with `GOWORK=off`. External consumers use the versions declared
+in `require`. `make release` aligns root and peer requirements and creates a root
+tag plus a tag for each contrib module. The example is excluded from release tags.
+A checkout build does not replace a consumer check against published versions.
+
+## Migrating from the previous API
+
+This rewrite stays on **v1**, with the same root import path, and deliberately
+breaks the previous API. Existing applications can keep their pinned releases
+until they migrate.
+
+The former xconf DSL, `xconfgen`, `pkg/load` and `pkg/structconf` are removed. Move
+schema definitions and validation rules to schemapb, select explicit contrib
+sources, and use `LoadAs` or `OpenAs` for typed configuration. Upgrading the library
+does not automatically migrate consumers.
