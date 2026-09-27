@@ -5,21 +5,19 @@ Load configuration from explicit sources, merge them in priority order, and appl
 reload, subscriptions and field provenance. Invalid updates keep the last valid config.
 
 **Go 1.25.7+.** Root module: `github.com/gopherex/xconf`. Sources and decoders are
-separate contrib modules. This README describes `master`; published `v1.1.2` still
-contains the previous API. The rewritten API stays on v1 and requires migration.
+separate contrib modules. The rewritten API starts at **v1.2.0** and requires
+migration from earlier releases.
 
 ## Quick start
 
 Install the library and the integrations used below in your application's Go module:
 
 ```sh
-go get github.com/gopherex/xconf@master \
-  github.com/gopherex/xconf/contrib/sources/file@master \
-  github.com/gopherex/xconf/contrib/sources/env@master \
-  github.com/gopherex/xconf/contrib/decoders/json@master
+go get github.com/gopherex/xconf@v1.2.0 \
+  github.com/gopherex/xconf/contrib/sources/file@v1.2.0 \
+  github.com/gopherex/xconf/contrib/sources/env@v1.2.0 \
+  github.com/gopherex/xconf/contrib/decoders/json@v1.2.0
 ```
-
-Use `@master` until the rewritten API has a tagged release.
 
 A complete application reading `config.json`, an optional local file and environment:
 
@@ -213,8 +211,10 @@ diagnostics and unwrapped provider errors may contain secrets.
 
 `make test` builds, vets and race-tests every module. `make tidy` updates dependencies.
 Local contrib `replace` directives support checkout development with `GOWORK=off`;
-consumers use published versions. `make release` aligns root/contrib requirements
-and tags. Verify a released consumer separately, without local replacements.
+consumers use published versions. `make release` updates requirements in all modules,
+including the example, then tidies and tests before committing and publishing library
+tags. Examples are not tagged. `python3 scripts/test_release.py` checks this workflow
+against a local test remote. Verify released consumers without local replacements.
 
 The old xconf DSL, `xconfgen`, `pkg/load` and `pkg/structconf` are removed. Migrate
 schemas to schemapb and loading to `LoadAs` / `OpenAs`; existing applications can

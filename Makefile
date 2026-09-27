@@ -39,6 +39,8 @@ release:
 	  exit 1
 	fi
 
+	all_mods="$(MODDIRS)"
+	# Examples consume the release version but do not receive library tags.
 	mods="$(filter-out example,$(MODDIRS))"
 	cur="$$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
 	cur="$${cur:-0.0.0}"
@@ -77,6 +79,7 @@ release:
 	  echo "Will DELETE and recreate $${#TAGS[@]} tags of v$$cur on $$head, then force-push."
 	  read -r -p "Type 'yes' to proceed: " ok
 	  [ "$$ok" = "yes" ] || { echo "Aborted."; exit 0; }
+	  $(MAKE) test
 	  for t in "$${TAGS[@]}"; do
 	    git tag -d "$$t" 2>/dev/null || true
 	    git push origin ":refs/tags/$$t" 2>/dev/null || true
@@ -107,13 +110,14 @@ release:
 	  mapfile -t TAGS < <(tags_for "$$new")
 	  echo
 	  echo "Release v$$new — will:"
-	  echo "  - align root and peer contrib requirements to v$$new"
+	  echo "  - align library requirements in every module, including examples, to v$$new"
+	  echo "  - tidy, build, vet and test all modules before publishing"
 	  echo "  - commit 'chore(release): bump version to v$$new'"
 	  echo "  - create $${#TAGS[@]} tags and push"
 	  read -r -p "Type 'yes' to proceed: " ok
 	  [ "$$ok" = "yes" ] || { echo "Aborted."; exit 0; }
 
-	  for d in $$mods; do
+	  for d in $$all_mods; do
 	    [ "$$d" = "." ] && continue
 	    for dep in $$mods; do
 	      [ "$$dep" = "." ] && module="$(ROOT_MODULE)" || module="$(ROOT_MODULE)/$$dep"
@@ -122,6 +126,8 @@ release:
 	      fi
 	    done
 	  done
+	  $(MAKE) tidy
+	  $(MAKE) test
 	  git add -A
 	  git diff --cached --quiet || git commit -m "chore(release): bump version to v$$new"
 	  for t in "$${TAGS[@]}"; do git tag -a "$$t" -m "$$t"; done
