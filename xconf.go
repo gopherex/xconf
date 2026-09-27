@@ -1,94 +1,262 @@
-// Package xconf provides a typed, declarative configuration DSL.
-//
-// Schemas are built with fluent constructors (Int, String, Duration, Slice,
-// Group, GroupAs, ...) and compose into a tree of Nodes. The same schema can
-// be:
-//   - serialized via Describe() and consumed by the xconfgen code generator
-//     to produce a typed *Config struct plus a Load() function with zero
-//     runtime reflection.
-//   - bound at runtime via reflection (planned).
-//
-// Validators live in github.com/gopherex/xconf/pkg/validate.
-// Implementation lives in internal/core; this file is the public facade.
+// Package xconf assembles ordered configuration layers against a schemapb schema.
+// Defaults, coercion and validation run once after merging. Reloads publish only
+// complete, validated snapshots.
 package xconf
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/gopherex/xconf/internal/core"
+	sp "github.com/gopherex/schemapb/go/schemapb"
+	"google.golang.org/protobuf/proto"
 )
 
-// --- Re-exported types ---
+// Path addresses an object member or list index. String returns a JSON pointer.
+type Path []string
 
-type (
-	Kind                          = core.Kind
-	FieldDesc                     = core.FieldDesc
-	Node                          = core.Node
-	Validator[T any]              = core.Validator[T]
-	Field[T any]                  = core.Field[T]
-	SliceField[T any]             = core.SliceField[T]
-	MapField[K comparable, V any] = core.MapField[K, V]
-	Schema                        = core.Schema
-)
+func (p Path) String() string {
+	var b strings.Builder
+	for _, s := range p {
+		b.WriteByte('/')
+		b.WriteString(strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1"))
+	}
+	return b.String()
+}
+func child(p Path, k string) Path { return append(append(Path(nil), p...), k) }
 
-// --- Re-exported kinds ---
+// Location describes a source position, never its value.
+type Location struct {
+	Name         string
+	Line, Column int
+}
+type Origin struct {
+	Source, Revision, Operation string
+	Location                    Location
+}
+type EditKind uint8
 
 const (
-	KindInvalid  = core.KindInvalid
-	KindInt      = core.KindInt
-	KindInt8     = core.KindInt8
-	KindInt16    = core.KindInt16
-	KindInt32    = core.KindInt32
-	KindInt64    = core.KindInt64
-	KindUint     = core.KindUint
-	KindUint8    = core.KindUint8
-	KindUint16   = core.KindUint16
-	KindUint32   = core.KindUint32
-	KindUint64   = core.KindUint64
-	KindFloat32  = core.KindFloat32
-	KindFloat64  = core.KindFloat64
-	KindString   = core.KindString
-	KindBytes    = core.KindBytes
-	KindBool     = core.KindBool
-	KindDuration = core.KindDuration
-	KindTime     = core.KindTime
-	KindSlice    = core.KindSlice
-	KindMap      = core.KindMap
-	KindGroup    = core.KindGroup
+	Replace EditKind = iota + 1
+	Delete
 )
 
-// --- Field constructors ---
-
-func Int(name string) *Field[int]                { return core.Int(name) }
-func Int8(name string) *Field[int8]              { return core.Int8(name) }
-func Int16(name string) *Field[int16]            { return core.Int16(name) }
-func Int32(name string) *Field[int32]            { return core.Int32(name) }
-func Int64(name string) *Field[int64]            { return core.Int64(name) }
-func Uint(name string) *Field[uint]              { return core.Uint(name) }
-func Uint8(name string) *Field[uint8]            { return core.Uint8(name) }
-func Uint16(name string) *Field[uint16]          { return core.Uint16(name) }
-func Uint32(name string) *Field[uint32]          { return core.Uint32(name) }
-func Uint64(name string) *Field[uint64]          { return core.Uint64(name) }
-func Float32(name string) *Field[float32]        { return core.Float32(name) }
-func Float64(name string) *Field[float64]        { return core.Float64(name) }
-func String(name string) *Field[string]          { return core.String(name) }
-func Bytes(name string) *Field[[]byte]           { return core.Bytes(name) }
-func Bool(name string) *Field[bool]              { return core.Bool(name) }
-func Duration(name string) *Field[time.Duration] { return core.Duration(name) }
-func Time(name string) *Field[time.Time]         { return core.Time(name) }
-func Slice[T any](name string) *SliceField[T]    { return core.Slice[T](name) }
-func Map[K comparable, V any](name string) *MapField[K, V] {
-	return core.Map[K, V](name)
+// Edit operates on object members. Lists are replaced as a whole.
+type Edit struct {
+	Kind  EditKind
+	Path  Path
+	Value any
+}
+type Layer struct {
+	Values    map[string]any
+	Revision  string
+	Locations map[string]Location // keys are JSON pointers
+	Edits     []Edit              // applied in order after Values
 }
 
-// --- Schema constructors / composition ---
-
-func Define(name string, fields ...Node) *Schema { return core.Define(name, fields...) }
-func Group(name string, fields ...Node) *Schema  { return core.Group(name, fields...) }
-func GroupAs[T any](name string, fields ...Node) *Schema {
-	return core.GroupAs[T](name, fields...)
+// Source reads a complete partial layer. Read must honor ctx and return owned
+// data (or data it will not mutate). The schema argument is an isolated copy.
+// Sources must not apply schema defaults or require a complete configuration.
+type Source interface {
+	Name() string
+	Read(context.Context, *sp.Schema) (Layer, error)
 }
-func Embed(name string, sub *Schema) *Schema { return core.Embed(name, sub) }
-func WithLoader[T any](s *Schema, loader func() (*T, error)) *Schema {
-	return core.WithLoader(s, loader)
+
+// Watcher registers notifications synchronously, before the initial Read.
+// Notifications invalidate the whole layer. stop must release resources and
+// wait for callbacks to finish. Read and notifications may run concurrently.
+type Watcher interface {
+	Watch(context.Context, func()) (stop func(), err error)
+}
+
+var ErrNotFound = errors.New("xconf: source not found")
+var ErrClosed = errors.New("xconf: runtime closed")
+
+// SourceError omits provider error text, which may contain secrets.
+// The original error remains available via errors.Is/As/Unwrap.
+type SourceError struct {
+	Source, Stage string
+	Cause         error
+}
+
+func (e *SourceError) Error() string {
+	return fmt.Sprintf("xconf: source %q: %s failed", e.Source, e.Stage)
+}
+func (e *SourceError) Unwrap() error { return e.Cause }
+
+// ValidationError carries diagnostics without including input values in Error().
+type ValidationError struct {
+	Result *sp.ValidationResult
+	Report *sp.ResolveReport
+}
+
+func (e *ValidationError) Error() string {
+	var items []string
+	for _, v := range e.Result.GetErrors() {
+		items = append(items, v.GetPath()+": "+v.GetCode().String())
+	}
+	return "xconf: validation failed: " + strings.Join(items, "; ")
+}
+
+// Snapshot owns immutable state. Accessors returning mutable data clone it.
+type Snapshot struct {
+	baked      *sp.Baked
+	validation *sp.ValidationResult
+	report     *sp.ResolveReport
+	origins    map[string][]Origin
+	revisions  map[string]string
+	version    uint64
+	loadedAt   time.Time
+}
+
+func (s *Snapshot) Version() uint64           { return s.version }
+func (s *Snapshot) LoadedAt() time.Time       { return s.loadedAt }
+func (s *Snapshot) Baked() *sp.Baked          { return proto.Clone(s.baked).(*sp.Baked) }
+func (s *Snapshot) Report() *sp.ResolveReport { return proto.Clone(s.report).(*sp.ResolveReport) }
+func (s *Snapshot) Validation() *sp.ValidationResult {
+	return proto.Clone(s.validation).(*sp.ValidationResult)
+}
+func (s *Snapshot) Revisions() map[string]string {
+	m := map[string]string{}
+	for k, v := range s.revisions {
+		m[k] = v
+	}
+	return m
+}
+
+// Explain returns source writes followed by schema operations at this exact path.
+// Records contain no values, including overridden values.
+func (s *Snapshot) Explain(path ...string) []Origin {
+	return append([]Origin(nil), s.origins[Path(path).String()]...)
+}
+func (s *Snapshot) Decode(target any) error { return s.Baked().Decode(target) }
+func Decode[T any](s *Snapshot) (T, error) {
+	var value T
+	if s == nil {
+		return value, errors.New("xconf: nil snapshot")
+	}
+	err := s.Decode(&value)
+	return value, err
+}
+func reportPath(parts []*sp.PathSegment) Path {
+	p := Path{}
+	for _, part := range parts {
+		switch v := part.Segment.(type) {
+		case *sp.PathSegment_Key:
+			p = append(p, v.Key)
+		case *sp.PathSegment_Index:
+			p = append(p, strconv.FormatUint(v.Index, 10))
+		}
+	}
+	return p
+}
+
+type loader struct {
+	schema  *sp.Schema
+	engine  *sp.Engine
+	sources []Source
+}
+
+// Loader holds an owned schema and compiled engine for repeated loads.
+// Compile options (including custom formats and CEL cost limits) pass to schemapb.
+type Loader struct{ base *loader }
+
+func New(schema *sp.Schema, options ...sp.CompileOption) (*Loader, error) {
+	if schema == nil {
+		return nil, errors.New("xconf: nil schema")
+	}
+	owned := proto.Clone(schema).(*sp.Schema)
+	engine, err := sp.Compile(owned, options...)
+	if err != nil {
+		return nil, err
+	}
+	return &Loader{base: &loader{schema: owned, engine: engine}}, nil
+}
+func (l *Loader) bind(sources []Source) (*loader, error) {
+	seen := map[string]bool{}
+	for _, source := range sources {
+		if source == nil || source.Name() == "" {
+			return nil, errors.New("xconf: source requires a name")
+		}
+		if seen[source.Name()] {
+			return nil, fmt.Errorf("xconf: duplicate source %q", source.Name())
+		}
+		seen[source.Name()] = true
+	}
+	out := *l.base
+	out.sources = append([]Source(nil), sources...)
+	return &out, nil
+}
+func newLoader(schema *sp.Schema, sources []Source) (*loader, error) {
+	l, err := New(schema)
+	if err != nil {
+		return nil, err
+	}
+	return l.bind(sources)
+}
+func (l *Loader) Load(ctx context.Context, sources ...Source) (*Snapshot, error) {
+	bound, err := l.bind(sources)
+	if err != nil {
+		return nil, err
+	}
+	s, err := bound.load(ctx)
+	if err == nil {
+		s.version = 1
+	}
+	return s, err
+}
+
+func Load(ctx context.Context, schema *sp.Schema, sources ...Source) (*Snapshot, error) {
+	l, err := newLoader(schema, sources)
+	if err != nil {
+		return nil, err
+	}
+	s, err := l.load(ctx)
+	if err == nil {
+		s.version = 1
+	}
+	return s, err
+}
+func LoadAs[T any](ctx context.Context, schema *sp.Schema, sources ...Source) (T, error) {
+	s, err := Load(ctx, schema, sources...)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return Decode[T](s)
+}
+func (l *loader) load(ctx context.Context) (*Snapshot, error) {
+	state := &merger{values: map[string]any{}, origins: map[string][]Origin{}, schema: l.schema}
+	revisions := map[string]string{}
+	for _, source := range l.sources {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		layer, err := source.Read(ctx, proto.Clone(l.schema).(*sp.Schema))
+		if err != nil {
+			return nil, &SourceError{source.Name(), "read", err}
+		}
+		if err = state.apply(source.Name(), layer); err != nil {
+			return nil, &SourceError{source.Name(), "merge", err}
+		}
+		revisions[source.Name()] = layer.Revision
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	baked, result, report, err := l.engine.BakeDetailed(state.values)
+	if err != nil {
+		return nil, fmt.Errorf("xconf: bake failed: %w", err)
+	}
+	if result.Blocking() {
+		return nil, &ValidationError{result, report}
+	}
+	for _, event := range report.GetEvents() {
+		key := reportPath(event.GetPathSegments()).String()
+		state.origins[key] = append(state.origins[key], Origin{Source: "schema", Operation: event.GetOperation().String()})
+	}
+	return &Snapshot{baked: baked, validation: result, report: report, origins: state.origins, revisions: revisions, loadedAt: time.Now()}, nil
 }

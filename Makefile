@@ -22,11 +22,11 @@ MODDIRS = $(shell find . -name go.mod -not -path './.git/*' -printf '%h\n' | sed
 test:
 	@for d in $(MODDIRS); do
 	  echo "== $$d =="
-	  ( cd "$$d" && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test ./... )
+	  ( cd "$$d" && GOWORK=off go build -o /dev/null ./... && GOWORK=off go vet ./... && GOWORK=off go test -race ./... )
 	done
 
 tidy:
-	@for d in $(MODDIRS); do ( cd "$$d" && go mod tidy ); done
+	@for d in $(MODDIRS); do ( cd "$$d" && GOWORK=off go mod tidy ); done
 
 release:
 	@set -euo pipefail
@@ -39,7 +39,7 @@ release:
 	  exit 1
 	fi
 
-	mods="$(MODDIRS)"
+	mods="$(filter-out example,$(MODDIRS))"
 	cur="$$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
 	cur="$${cur:-0.0.0}"
 	head="$$(git rev-parse --short HEAD)"
@@ -57,6 +57,16 @@ release:
 	  done
 	}
 
+	# Publish the root tag separately, after contrib tags: GitHub does not emit
+	# tag push events for a push containing more than three tags.
+	push_tags() {
+	  local t root_tag
+	  for t in "$${TAGS[@]}"; do
+	    if [[ "$$t" == */* ]]; then git push origin "$$t"; else root_tag="$$t"; fi
+	  done
+	  git push origin "$$root_tag"
+	}
+
 	case "$$action" in
 	1)
 	  if [ "$$cur" = "0.0.0" ] && ! git tag -l 'v0.0.0' | grep -q .; then
@@ -72,7 +82,7 @@ release:
 	    git push origin ":refs/tags/$$t" 2>/dev/null || true
 	  done
 	  for t in "$${TAGS[@]}"; do git tag -a "$$t" -m "$$t"; done
-	  git push origin --force "$${TAGS[@]}"
+	  push_tags
 	  echo "✓ Recreated v$$cur on $$head."
 	  ;;
 	2)
@@ -97,21 +107,26 @@ release:
 	  mapfile -t TAGS < <(tags_for "$$new")
 	  echo
 	  echo "Release v$$new — will:"
-	  echo "  - set 'require $(ROOT_MODULE) v$$new' in every contrib go.mod"
-	  echo "  - commit 'release v$$new'"
+	  echo "  - align root and peer contrib requirements to v$$new"
+	  echo "  - commit 'chore(release): bump version to v$$new'"
 	  echo "  - create $${#TAGS[@]} tags and push"
 	  read -r -p "Type 'yes' to proceed: " ok
 	  [ "$$ok" = "yes" ] || { echo "Aborted."; exit 0; }
 
 	  for d in $$mods; do
 	    [ "$$d" = "." ] && continue
-	    ( cd "$$d" && go mod edit -require=$(ROOT_MODULE)@v$$new )
+	    for dep in $$mods; do
+	      [ "$$dep" = "." ] && module="$(ROOT_MODULE)" || module="$(ROOT_MODULE)/$$dep"
+	      if (cd "$$d" && go mod edit -json) | python3 -c 'import json,sys; module=sys.argv[1]; sys.exit(not any(r["Path"] == module for r in json.load(sys.stdin).get("Require", [])))' "$$module"; then
+	        ( cd "$$d" && go mod edit -require="$$module@v$$new" )
+	      fi
+	    done
 	  done
 	  git add -A
-	  git diff --cached --quiet || git commit -m "release v$$new"
+	  git diff --cached --quiet || git commit -m "chore(release): bump version to v$$new"
 	  for t in "$${TAGS[@]}"; do git tag -a "$$t" -m "$$t"; done
 	  git push origin HEAD
-	  git push origin "$${TAGS[@]}"
+	  push_tags
 	  echo "✓ Released v$$new ($${#TAGS[@]} modules)."
 	  ;;
 	*)

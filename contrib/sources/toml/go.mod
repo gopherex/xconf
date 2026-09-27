@@ -1,14 +1,20 @@
-module github.com/gopherex/xconf
+module github.com/gopherex/xconf/contrib/sources/toml
 
 go 1.25.7
 
 require (
+	github.com/gopherex/xconf v1.1.2
+	github.com/gopherex/xconf/contrib/sources/file v1.1.2
+)
+
+require (
 	github.com/gopherex/schemapb/go v0.0.0-20260927201943-2e4130a88c4c
-	google.golang.org/protobuf v1.36.11
+	github.com/gopherex/xconf/contrib/decoders/toml v1.1.2
 )
 
 require (
 	cel.dev/expr v0.25.1 // indirect
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/cbroglie/mustache v1.4.0 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
@@ -18,4 +24,11 @@ require (
 	golang.org/x/text v0.22.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240826202546-f6391c0de4c7 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/gopherex/xconf => ../../..
+
+replace github.com/gopherex/xconf/contrib/sources/file => ../file
+
+replace github.com/gopherex/xconf/contrib/decoders/toml => ../../decoders/toml

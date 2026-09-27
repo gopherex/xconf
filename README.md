@@ -1,389 +1,156 @@
 # xconf
 
-[![CI](https://github.com/gopherex/xconf/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/gopherex/xconf/actions/workflows/ci.yml)
+Configuration loading and live reload against a [schemapb](https://github.com/gopherex/schemapb) schema.
+This is the v1 API. The module remains `github.com/gopherex/xconf`; the previous DSL,
+code generator and `pkg/structconf` API are removed. Existing applications can stay
+on their pinned releases until migrated.
 
-Typed, declarative configuration for Go. Fluent schema DSL, automatic env
-naming, runtime loading from env/JSON/YAML/TOML, and `go generate`-based
-codegen of a typed `Config` struct + a zero-reflection `LoadFromEnv` entry
-point.
+## Contract
 
-## Why
+Sources supply partial raw layers, ordered from lowest to highest priority.
+Objects and maps merge recursively. Scalars, null and lists replace previous values.
+Explicit zero, false, empty string and empty list are present values. An empty object
+preserves lower keys; `Edit{Kind: Replace}` clears/replaces an object. `Delete` removes
+a key from the assembled input; a schema default can subsequently restore it.
+Changing a OneOf discriminator replaces the previous variant's entire object.
 
-- **Type-safe at definition time.** `xconf.Int("Port").Validate(validate.Range(1, 65535))`
-  rejects type mismatches at compile time via generics.
-- **Composable.** External libraries export their own `*Schema`; consumers
-  `Embed("Redis", redislib.ConfigSchema)` to scope it under any name. No
-  duplication of struct shapes.
-- **Multi-source.** Defaults < JSON/YAML/TOML files < env vars, with the last
-  source winning. Sources are a small interface — bring your own.
-- **Two loading paths.**
-  - `Load(sources ...load.Source)` — reflection-based, plugs in any source.
-  - `LoadFromEnv()` — generated, zero-reflection on the hot path.
-- **Two authoring paths.**
-  - Fluent DSL (`xconf.Define(...)`) — primary, most expressive.
-  - Struct tags (`pkg/structtag`) — derive a schema from `xconf:"..."` tags
-    on an existing struct.
+Only after all layers merge does schemapb run defaults, coercion, normalization,
+computed fields, validation and canonicalization. Enable coercion in the schema
+for textual sources (reflection already enables it). Unknown-field policy belongs
+to the schema's strict setting. An absent section is created only with an explicit
+Object/Ref `default={}`. Null is never treated as absence.
 
-## Install
-
-```bash
-go get github.com/gopherex/xconf@latest
-go install github.com/gopherex/xconf/cmd/xconfgen@latest
-```
-
-`go get` pulls the library. `go install` puts the `xconfgen` binary on your
-`$PATH` so `//go:generate xconfgen ...` works. Make sure `$(go env GOBIN)`
-(or `$(go env GOPATH)/bin` if `GOBIN` is empty) is in your `PATH`.
-
-Optional sub-packages are pulled transitively when imported:
+## Loading
 
 ```go
-import (
-    "github.com/gopherex/xconf"
-    "github.com/gopherex/xconf/pkg/validate"
-    "github.com/gopherex/xconf/pkg/load"
-    "github.com/gopherex/xconf/pkg/structtag" // only if you use struct tags
+schema, err := sp.ReflectType[Config](sp.ID("app", "config", sp.Ver(1, 0, 0)))
+if err != nil { return err }
+snapshot, err := xconf.Load(ctx, schema,
+    yaml.File("config.yaml"),
+    xconf.Optional(yaml.File("config.local.yaml")),
+    env.New(env.Prefix("APP_")),
 )
+if err != nil { return err }
+cfg, err := xconf.Decode[Config](snapshot)
 ```
 
-## Quick start
+`LoadAs[T]` returns the decoded configuration directly. `Load` retains diagnostics,
+source revisions and `Explain("db", "port")` metadata. Explanation records contain
+source writes and schema operations, never values. Paths use JSON pointer encoding;
+map keys containing dots or slashes remain unambiguous.
 
-Full copy-paste flow from zero to a working typed config:
+`New(schema, compileOptions...)` builds a reusable Loader with custom schemapb
+formats or CEL cost limits. Its Load/Open methods reuse the compiled engine.
 
-```bash
-mkdir myapp && cd myapp
-go mod init example.com/myapp
-go get github.com/gopherex/xconf@latest
-go install github.com/gopherex/xconf/cmd/xconfgen@latest
-```
+A runnable typed example is in `example/`: run `GOWORK=off go run . -once` there.
+Run without `-once` and edit `config.json` to see reloads; `APP_SERVER_PORT` overrides
+its port. The example module is tested by CI and excluded from library release tags.
 
-Create `config/schema.go`:
+## Live configuration
+
+`Open` returns an untyped runtime; `OpenAs[T]` also checks decoding before publishing.
+`TypedRuntime.Current()` returns `(T, error)` with independent maps and slices.
+`Snapshot()` is immutable through its public API; Baked/Report/Validation accessors
+and Decode copy owned state. Custom decode hooks should be deterministic.
 
 ```go
-package config
-
-import (
-    "github.com/gopherex/xconf"
-    "github.com/gopherex/xconf/pkg/validate"
+runtime, err := xconf.OpenAs[Config](ctx, schema,
+    yaml.File("config.yaml"), env.New(env.Prefix("APP_")),
 )
-
-//go:generate xconfgen -type AppConfig
-
-var Schema = xconf.Define("AppConfig",
-    xconf.Int("Port").Default(8080).Validate(validate.Range(1, 65535)),
-    xconf.String("DSN").Env("DB_DSN").Required(),
-)
-```
-
-Create `main.go`:
-
-```go
-package main
-
-import (
-    "fmt"
-
-    "example.com/myapp/config"
-    "github.com/gopherex/xconf/pkg/load"
-)
-
-func main() {
-    cfg, err := config.LoadFromEnv()
-    if err != nil { panic(err) }
-    fmt.Printf("%+v\n", cfg)
-    _ = load.FromEnv // referenced for the Load() variant
+if err != nil { return err }
+defer runtime.Close()
+for event := range runtime.Subscribe(ctx) {
+    if event.Err != nil { /* retain the currently applied settings */ continue }
+    cfg, err := xconf.Decode[Config](event.Snapshot)
+    if err != nil { return err }
+    _ = cfg // application owns component reconfiguration
 }
 ```
 
-Generate and run:
+Watchers register before the initial read. Initial failure aborts Open. Reloads are
+serialized, rebuild from source layers and retain the last valid snapshot on read,
+merge, validation or decode failure. `Reload(ctx)` requests a manual rebuild.
+Source removal therefore reveals lower-priority values. Changes during a rebuild
+schedule another pass. Notifications are coalesced over a 20ms window.
 
-```bash
-go generate ./...
-DB_DSN=postgres://localhost/x go run .
-```
-
-### Schema with composition and validation
-
-```go
-package app
-
-import (
-    "github.com/gopherex/xconf"
-    "github.com/gopherex/xconf/example/redislib"
-    "github.com/gopherex/xconf/pkg/validate"
-)
-
-//go:generate xconfgen -type AppConfig
-
-var Schema = xconf.Define("AppConfig",
-    xconf.Int("Port").
-        Default(8080).
-        Validate(validate.Range(1, 65535)),
-
-    xconf.String("DSN").
-        Env("DB_DSN").
-        Required().
-        Validate(validate.NonEmpty()),
-
-    xconf.Slice[string]("AllowedHosts").
-        EnvSplit(",").
-        Validate(validate.Each(validate.NonEmpty())),
-
-    xconf.Map[string, int]("RateLimits").
-        EnvSplit(",").KVSplit("="),
-
-    xconf.Embed("Redis", redislib.ConfigSchema),
-)
-```
-
-Run `go generate ./...` to produce `appconfig_gen.go` containing
-`type AppConfig struct { ... }`, `Load(sources ...) (*AppConfig, error)`,
-and `LoadFromEnv() (*AppConfig, error)`.
-
-Use it:
-
-```go
-import (
-    "github.com/gopherex/gopherex/xconf/example/app"
-    "github.com/gopherex/xconf/pkg/load"
-)
-
-func main() {
-    cfg, err := app.Load(
-        must(load.FromYAMLFileOptional("config.yaml")),
-        load.FromEnv(nil), // env wins
-    )
-    if err != nil { panic(err) }
-    _ = cfg.Port
-}
-```
-
-Or, for the no-reflection hot path:
-
-```go
-cfg, err := app.LoadFromEnv() // env-only, typed parsing
-```
-
-## Authoring schemas
-
-### Fluent DSL
-
-| Constructor | Field type |
-|------------|------------|
-| `Int`, `Int8/16/32/64` | signed integers |
-| `Uint`, `Uint8/16/32/64` | unsigned integers |
-| `Float32`, `Float64` | floats |
-| `String`, `Bytes` | string, []byte |
-| `Bool` | bool |
-| `Duration`, `Time` | time.Duration, time.Time |
-| `Slice[T]` | []T |
-| `Map[K, V]` | map[K]V |
-| `Group(name, ...)` | inline nested struct |
-| `GroupAs[T](name, ...)` | nested group bound to existing Go type T |
-| `WithLoader(s, fn)` | attach external loader to a group |
-| `Embed(name, sub)` | re-root an external schema under a new name |
-
-Chain methods on `*Field[T]`:
-
-```
-.Default(v) .Env(name) .Required() .Description(s) .Validate(v)
-```
-
-`*SliceField[T]` adds `.EnvSplit(sep)`. `*MapField[K,V]` adds `.EnvSplit`,
-`.KVSplit`. `*Schema` adds `.EnvPrefix(p)`.
-
-### Automatic env names
-
-Auto-derived as `<GROUP_PREFIX>_<FIELD_NAME>` in SCREAMING_SNAKE_CASE.
-
-- Root `Define` contributes no prefix by default.
-- Nested `Group("DB")` adds `DB_` to descendants.
-- `Embed("Redis", sub)` rescopes `sub` under `REDIS_`.
-- Explicit `.Env("X")` wins.
-
-`HTTPServer` → `HTTP_SERVER`. `AllowedHosts` → `ALLOWED_HOSTS`.
-
-### External library composition
-
-Libraries export a schema **and** a Go type. Consumers don't redeclare either:
-
-```go
-// redislib/redislib.go
-type Config struct {
-    Addr    string
-    Timeout time.Duration
-}
-var ConfigSchema = xconf.GroupAs[Config]("Config",
-    xconf.String("Addr").Default("localhost:6379"),
-    xconf.Duration("Timeout").Default(5*time.Second),
-)
-```
-
-```go
-// app/schema.go
-var Schema = xconf.Define("AppConfig",
-    xconf.Embed("Redis", redislib.ConfigSchema),
-)
-// generated AppConfig has: Redis redislib.Config
-```
-
-Add `WithLoader` to delegate loading of that subtree to the library's own
-loader:
-
-```go
-var ConfigSchema = xconf.WithLoader(
-    xconf.GroupAs[Config]("Config", ...),
-    LoadConfig, // func() (*Config, error)
-)
-```
-
-The loader's fully-qualified name is captured via `runtime.FuncForPC`; both
-the codegen path (`Load`, `LoadFromEnv`) and the reflective `load.Load`
-delegate to it.
-
-### Struct tags (alternative)
-
-For code-first projects, derive a schema from struct tags:
-
-```go
-type AppCfg struct {
-    Port    int           `xconf:"default=8080"`
-    DSN     string        `xconf:"env=DB_DSN,required"`
-    Tags    []string      `xconf:"split=|"`
-    Limits  map[string]int `xconf:"split=;,kv=:"`
-    Timeout time.Duration `xconf:"default=2s"`
-    DB      DBCfg          // nested struct → Group
-    Skipped string        `xconf:"skip"`
-}
-
-schema, _ := structtag.SchemaFromStruct[AppCfg]("App")
-```
-
-Supported keys: `env`, `default`, `required`, `desc`, `split`, `kv`, `skip`.
-Validators are not expressible in tags (they're typed closures) — compose
-with the fluent API if needed.
+Subscribers receive the current snapshot immediately. Delivery never blocks reload;
+each subscriber retains only its latest event. Changed paths compare consecutive
+published snapshots, so a subscriber skipping versions must reconcile full state.
+An error event includes the last valid snapshot. Successful unchanged reads do not
+increment the version; provenance/revision changes do, even if values are identical.
+Recovery after a failed read emits a successful event even when the version stays unchanged.
+Cancellation closes subscriptions. Close cancels reads and stops watchers; source
+implementations must honor context. Atomic publication is process-local, not a
+transaction across unrelated external stores.
 
 ## Sources
 
-```go
-load.FromEnv(nil)                    // os.Getenv
-load.FromEnv(map[string]string{...}) // injected env (tests)
-load.FromMap(map[string]any{...})    // nested map
-load.FromJSONFile("c.json")
-load.FromYAMLFile("c.yaml")
-load.FromTOMLFile("c.toml")
-load.FromJSONFileOptional(...)       // no error if missing
-```
+Each contrib is a separate Go module. Import only the integrations you use:
 
-Sources are passed in priority order; later wins. Defaults apply if no
-source provides a value. `.Required()` fields error when no value is found.
-
-Implement your own:
-
-```go
-type Source interface {
-    Lookup(d xconf.FieldDesc, path []string) (raw any, ok bool, err error)
-}
-```
-
-## Struct configuration (`pkg/structconf`)
-
-`structconf.Load[T]` loads structs using `mapstructure`, `default`, and
-`validate` tags. Validation runs after binding, with precedence
-`default < files < .env < environment`.
-
-```go
-type Config struct {
-    URL   string   `mapstructure:"url" validate:"omitempty,url"`
-    Port  int      `mapstructure:"port" validate:"omitempty,min=1,max=65535"`
-    Links []string `mapstructure:"links" validate:"omitempty,dive,omitempty,url"`
-}
-
-cfg, err := structconf.Load[Config](structconf.WithYAMLFile("config.yaml"))
-```
-
-`omitempty` skips the remaining rules for the current value when it is empty.
-Its presence semantics follow
-[go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10#hdr-Omit_Empty):
-
-| Value | Skipped by `omitempty`? |
+| Module under `contrib/sources/` | Input |
 | --- | --- |
-| Empty string, zero number/duration, `false` | Yes |
-| Zero array, zero struct, zero `time.Time` | Yes |
-| Nil slice, map, pointer, interface | Yes |
-| Allocated empty slice or map (`[]`, `{}`) | No |
-| Non-nil pointer/interface containing a zero scalar or struct | No |
-| Interface/pointer resolving to a nil value | Yes |
-| String containing only spaces | No |
+| `json` | JSON object, exact numeric tokens |
+| `yaml` | One YAML mapping, aliases supported with bounded expansion |
+| `toml` | TOML document |
+| `env` | Process or injected environment, schema-based names |
+| `dotenv` | .env file; does not modify process environment |
+| `flags` | Explicit argument slice and name-to-path bindings |
+| `file` | Custom document decoder and file lifecycle |
+| `fs` | Any `fs.FS`, including embedded defaults |
+| `http` | HTTP document with ETag / Last-Modified revalidation |
+| `directory` | One string value per file, including Docker/Kubernetes secrets |
+| `s3` | S3-compatible object storage, optional pinned version |
+| `vault` | Vault KV v2 object, optional pinned version |
+| `nats` | One document in a JetStream KV key, native watch |
+| `consul` | One document or a prefix of KV fields, blocking-query watch |
+| `etcd` | One document in an etcd v3 key, revision watch |
+| `kubernetes` | Named ConfigMap/Secret data or document, API watch |
+| `pflag` | Snapshot of explicitly changed pflag/Cobra flags |
+| `reader` | Repeatable reader factory or captured stream |
+| `envfile` | Explicit `*_FILE` variables pointing to secret files |
 
-An empty value explicitly supplied by a source overrides a default and is
-then checked using these rules. `omitempty` does not suppress binding errors.
-A zero struct with `omitempty` skips validation of its fields; a present
-pointer section still validates its fields. Absent pointer fields/sections
-retain the loader's optional behavior and are not validated.
+Transport-independent decoders are separate modules at `contrib/decoders/json`,
+`contrib/decoders/yaml` and `contrib/decoders/toml`. Each exports `Decode` with the
+`xconf.Decoder` signature. The `sources/json`, `sources/yaml` and `sources/toml`
+modules retain convenient `File` constructors and forward `Decode` to these decoders.
+For example, `http.New(client, url, json.Decode)` and
+`s3.New(client, bucket, key, yaml.Decode)` use the same schema pipeline as local files.
+Source adapters share bounded reads and location/revision metadata handling through
+`internal/document`, an internal package of the root module. The public decoder
+contract remains `xconf.Decoder`; each source and decoder integration has its own
+`contrib` module.
 
-Rules run left to right: `omitempty,url` accepts `""`, while `url,omitempty`
-fails before reaching `omitempty`. Likewise, place conditional requirements
-first, for example `required_if=Mode tls,omitempty,url`.
+See [source integration details](docs/sources.md) for construction, authentication,
+reload, missing-data behavior and projected-volume semantics.
 
-`dive` applies subsequent rules to each slice/array element or map value, at
-any nesting depth. `omitempty,dive,url` makes the collection optional;
-`dive,omitempty,url` makes each element optional. An omitted element does not
-skip its siblings. `omitempty,hostname|ip` is valid; `omitempty` itself must
-be a separate comma-delimited rule, not an alternative inside `|`.
+Files poll every 250ms, including rename/recreation and recovery after invalid reads.
+`file.Interval(0)` disables watching; `file.MaxBytes` changes the default 8MiB limit.
+`Optional` ignores only `ErrNotFound`, never invalid syntax, permissions or outages.
+`Poll(source, interval)` adds polling to any source. Static env/flags change only on
+manual reload or polling; they do not install process-global watchers.
 
-## Validators (`pkg/validate`)
+Env names derive from schema paths (`db.host` -> `APP_DB_HOST`). `env.Bind` maps an
+exact name to a path; `env.Split` enables explicit list delimiters, otherwise
+containers use JSON syntax. Empty scalar strings are preserved; empty split lists
+are empty lists. `env.Strict()` rejects unknown names under a nonempty prefix.
+Ambiguous names and overlapping parent/child inputs are errors. If the same path
+has scalar and container variants in OneOf, supply the whole variant as JSON. YAML merge keys and
+non-string mapping keys are rejected. Flags require explicit values, including bools;
+repeated flags use the last value. No implicit file search or CLI globals. Dotenv interpolation follows godotenv
+syntax inside that document; it does not expand against or modify process env.
 
-Typed via generics. Mismatched T fails at compile time.
+`Source.Read(ctx, schema)` returns a whole Layer, including optional location/revision
+metadata and explicit edits. It receives a schema copy and must return owned data.
+`Watcher.Watch` synchronously registers invalidations and returns a cleanup function.
+`SourceFunc` adapts custom readers; `NewMemory` supplies concurrent test/override data.
 
-- Numeric: `Range`, `Min`, `Max`, `Positive`, `NonNegative`, `NonZero`
-- Equality: `OneOf`, `Equal`
-- String: `NonEmpty`, `MinLen`, `MaxLen`, `LenBetween`, `Regex`,
-  `HasPrefix`, `HasSuffix`, `Contains`, `URL`, `Email`
-- Slice: `MinItems`, `MaxItems`, `Unique`, `Each`
-- Map: `MapMinSize`, `MapMaxSize`, `MapHasKey`, `MapKeys`, `MapValues`
-- Combinators: `All`, `Any`, `Not`
+Source error strings omit provider payloads; explicit Unwrap exposes the original
+cause for applications that need it. Raw Baked and validation diagnostics are explicit
+accessors and may contain secrets: do not log them as a configuration dump.
 
-## Codegen
+## Development and release
 
-`xconfgen` is installed once (`go install ./cmd/xconfgen`) and invoked via
-`go:generate`:
-
-```go
-//go:generate xconfgen -type AppConfig
-```
-
-Flags:
-
-- `-pkg` — schema package path (default `.`)
-- `-var` — schema variable name (default `Schema`)
-- `-type` — root struct name (required)
-- `-out` — output file (default `<lower(type)>_gen.go`)
-- `-loadfn` — generated load function name (default `Load`)
-
-What gets emitted:
-
-- One struct per inline `Group` (root + nested non-bound)
-- `BindType` groups reuse the external type (no duplicate struct)
-- `BindLoader` groups: `cfg.X = *LoaderFn()` after env/source pass
-- `Load(sources ...load.Source) (*T, error)` — runtime path
-- `LoadFromEnv() (*T, error)` — typed env parsing inline, then validators
-  via `load.Validate`
-
-## Layout
-
-```
-xconf/
-  xconf.go                       public facade (type aliases, constructors)
-  cmd/xconfgen/                  CLI for go:generate
-  internal/core/                 implementation
-  pkg/
-    validate/                    typed validators
-    load/                        runtime sources + loader
-    codegen/                     Render(*Schema) → Go source
-    structtag/                   schema-from-struct-tags
-    structconf/                  load and validate plain tagged structs
-  example/
-    redislib/                    external-library schema example
-    app/                         consumer schema + generated file
-```
+Go 1.25.7 or newer. `make test` builds, vets and race-tests every module with
+`GOWORK=off`. Contrib modules use local replacements inside this checkout; consumers
+use published module versions. `make release` keeps root and contrib tags aligned
+within v1. It does not migrate or upgrade downstream applications.
