@@ -196,14 +196,15 @@ The application owns connection pools, listeners and other reconfiguration work.
 
 ## Available sources
 
+Sources define where configuration comes from and how changes are detected.
+Document sources accept a decoder to choose the format; field sources such as
+environment variables supply values directly.
+
 Import paths below start with `github.com/gopherex/xconf/contrib/sources/`.
 Each row is an independent Go module.
 
 | Module | Input | Automatic updates |
 | --- | --- | --- |
-| `json` | JSON file via `File(path)` | File polling |
-| `yaml` | YAML file via `File(path)` | File polling |
-| `toml` | TOML file via `File(path)` | File polling |
 | `file` | File with a supplied decoder | File polling |
 | `fs` | Any `fs.FS`, including embedded files | Use `xconf.Poll` for mutable filesystems |
 | `reader` | Fresh reader factory, or one captured stream | Manual reload or `xconf.Poll` |
@@ -239,7 +240,8 @@ watch recovery, missing-data behavior and Kubernetes permissions.
 
 ## Decoders
 
-A decoder turns document bytes into a raw object and optional locations:
+A decoder defines how document bytes are parsed. It performs no I/O and returns
+a raw object and optional locations:
 
 ```go
 type Decoder func([]byte) (map[string]any, map[string]xconf.Location, error)
@@ -266,10 +268,18 @@ var remote = httpconf.New(http.DefaultClient,
     "https://config.example/app.json", jsondecode.Decode)
 ```
 
-The `sources/json`, `sources/yaml` and `sources/toml` modules provide convenient
-file constructors and also forward `Decode`. Document decoding does not apply
-schema defaults or validation. Shared bounded-reading and metadata helpers live
+Document decoding does not apply schema defaults or validation.
+Shared bounded-reading and metadata helpers live
 in the root module's `internal/document`; there is no public document module.
+
+### File convenience wrappers
+
+`contrib/sources/json`, `contrib/sources/yaml` and `contrib/sources/toml` are small
+convenience modules combining the `file` source with the corresponding decoder.
+For example, `jsonconf.File("config.json")` is shorthand for
+`file.New("config.json", jsondecode.Decode)`. They also forward `Decode`, but do not
+introduce additional transports or formats. Use `contrib/decoders/*` directly when
+choosing a format for HTTP, S3 or another document source.
 
 ## Snapshots and diagnostics
 
