@@ -132,6 +132,17 @@ func (s *Snapshot) Revisions() map[string]string {
 func (s *Snapshot) Explain(path ...string) []Origin {
 	return append([]Origin(nil), s.origins[Path(path).String()]...)
 }
+
+// Origins returns all provenance keyed by JSON pointer, including schema operations.
+// The map and each history slice are independent copies. Records contain no values.
+func (s *Snapshot) Origins() map[string][]Origin {
+	origins := make(map[string][]Origin, len(s.origins))
+	for path, history := range s.origins {
+		origins[path] = append([]Origin(nil), history...)
+	}
+	return origins
+}
+
 func (s *Snapshot) Decode(target any) error { return s.Baked().Decode(target) }
 func Decode[T any](s *Snapshot) (T, error) {
 	var value T

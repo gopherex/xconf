@@ -25,6 +25,20 @@ should be deterministic. `Close` cancels reads, stops watchers and waits for shu
 sources must honor context. Publication is process-local, without transactions
 across remote stores. Application component reconfiguration remains caller-owned.
 
+## Provenance
+
+`snapshot.Origins()` returns `map[string][]xconf.Origin` for all recorded paths,
+including overridden source writes and schema operations such as defaults and
+coercion. Each key is a JSON pointer: `/server/port`, or `/labels/a~1b` for the
+literal map key `a/b`. Each history has the same order as `Explain(path...)`.
+Paths represent recorded operations, not just fields remaining in the final value.
+
+The returned map and every history slice are independent copies; changing them
+does not modify the snapshot. An empty snapshot returns an empty, non-nil map.
+Origins contain source, revision, operation and location metadata, without values.
+Use this accessor to collect all provenance in one pass instead of traversing the
+configuration and calling `Explain` for each field.
+
 ## Custom sources
 
 Implement these interfaces from the root package:

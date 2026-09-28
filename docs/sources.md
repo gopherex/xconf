@@ -166,6 +166,10 @@ Consul also enforces its own [KV size limit](https://developer.hashicorp.com/con
 source := consulconf.NewPrefix(consulClient.KV(), "apps/api/")
 // apps/api/db/host -> db.host
 // apps/api/ports   -> ports (a JSON list if the schema declares a list)
+
+// Exclude service metadata before constructing the config layer.
+source = consulconf.NewPrefix(consulClient.KV(), "apps/api/",
+    consulconf.IgnoreKeys("_*", "config_revision", "db/_*"))
 ```
 
 The trailing slash is normalized. Values use the env adapter's schema-aware
@@ -175,6 +179,20 @@ empty leaf values remain present. Parent/child conflicts, duplicate paths, empty
 path segments and keys outside the selected prefix fail the read. A prefix with
 no value keys is `ErrNotFound`. Removing a key reveals lower layers on reload.
 At most 1024 entries and `MaxBytes` total value bytes are accepted.
+
+`IgnoreKeys` is opt-in and applies only to `NewPrefix`. Patterns use Go `path.Match`
+syntax against relative keys, without `apps/api/`: `*` matches within one path
+segment. Matching a parent also excludes its descendants, so `_*` skips `_revision`
+and `_meta/nested/key`; `db/_*` skips metadata under `db`. Multiple options accumulate.
+Pattern slices are copied. Invalid patterns, or using `IgnoreKeys` with the exact-key
+`New` constructor, make `Read` and `Watch` fail.
+
+Ignored keys contribute no values, locations or layer revision. Their updates can
+trigger a Consul watch/read, but do not advance a healthy runtime's snapshot version
+on their own. If only ignored keys remain, the source returns `ErrNotFound`, allowing
+`Optional` to reveal lower layers. Unmatched keys retain normal schema validation.
+ACL checks, prefix boundaries, the 1024-entry limit and `MaxBytes` still apply to the
+full SDK response, including ignored entries.
 
 One consistent List request supplies the entire layer. The blocking-query cursor
 uses the query index, while layer revision hashes the selected keys, their modify

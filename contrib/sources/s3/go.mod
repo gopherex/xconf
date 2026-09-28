@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.4
 	github.com/aws/smithy-go v1.28.1
-	github.com/gopherex/schemapb/go v0.0.0-20260927201943-2e4130a88c4c
+	github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4
 	github.com/gopherex/xconf v1.2.1
 )
 

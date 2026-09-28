@@ -206,8 +206,9 @@ The shared `internal/document` helper is private to the root module.
 | `Open(ctx, schema, sources...)` | Untyped runtime |
 | `New(schema, compileOptions...)` | Reusable compiled loader |
 
-`snapshot.Explain("server", "port")` returns provenance without values. Raw snapshot
-diagnostics and unwrapped provider errors may contain secrets.
+`snapshot.Explain("server", "port")` returns one field's provenance;
+`snapshot.Origins()` returns a copied `map[string][]Origin` for all JSON-pointer paths.
+Both omit values. Raw snapshot diagnostics and unwrapped provider errors may contain secrets.
 
 `make test` builds, vets and race-tests every module. `make tidy` updates dependencies.
 Local contrib `replace` directives support checkout development with `GOWORK=off`;

@@ -3,7 +3,7 @@ module github.com/gopherex/xconf/contrib/sources/nats
 go 1.25.7
 
 require (
-	github.com/gopherex/schemapb/go v0.0.0-20260927201943-2e4130a88c4c
+	github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4
 	github.com/gopherex/xconf v1.2.1
 	github.com/nats-io/nats.go v1.52.0
 )

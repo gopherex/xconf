@@ -52,8 +52,8 @@ github.com/google/go-cmp v0.4.0/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
-github.com/gopherex/schemapb/go v0.0.0-20260927201943-2e4130a88c4c h1:isutkpWYke4iRQQjCYNDeamvzN7RigMpd1DPjR6kMIw=
-github.com/gopherex/schemapb/go v0.0.0-20260927201943-2e4130a88c4c/go.mod h1:g9W8TC7ZZyPXKp+eQuPv612T2d0ZGs/Y+AIR2RA8KYw=
+github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4 h1:2JW7LmVbe+E98KrCRLtCfWBRM3LueN2ny6G3hNXXSwo=
+github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4/go.mod h1:g9W8TC7ZZyPXKp+eQuPv612T2d0ZGs/Y+AIR2RA8KYw=
 github.com/hashicorp/consul/api v1.33.4 h1:AJkZp6qzgAYcMIU0+CjJ0Rb7+byfh0dazFK/gzlOcJk=
 github.com/hashicorp/consul/api v1.33.4/go.mod h1:BkH3WEUzsnWvJJaHoDqKqoe2Q2EIixx7Gjj6MTwYnOA=
 github.com/hashicorp/consul/sdk v0.17.2 h1:sC0jgNhJkZX3wo1DCrkG12r+1JlZQpWvk3AoL3yZE4Q=

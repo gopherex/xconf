@@ -1,4 +1,4 @@
-// Package consul reads a document from one Consul KV key and watches its index.
+// Package consul reads Consul KV documents or field prefixes and watches their index.
 package consul
 
 import (
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,12 +37,24 @@ type Source struct {
 	listClient    ListClient
 	key, id       string
 	decode        x.Decoder
+	ignoreKeys    []string
 	limit         int64
 	timeout, wait time.Duration
 }
 
 func Name(id string) Option   { return func(s *Source) { s.id = id } }
 func MaxBytes(n int64) Option { return func(s *Source) { s.limit = n } }
+
+// IgnoreKeys excludes keys from NewPrefix using path.Match patterns relative to
+// the selected prefix. A matching parent excludes its whole subtree: "_*" skips
+// top-level underscore keys and their descendants; "db/_*" skips them under db.
+// Multiple options accumulate. Patterns are copied when the option is created.
+// Invalid patterns or using this option with New cause Read and Watch to fail.
+// Response size/count limits and ACL checks still apply to the entire response.
+func IgnoreKeys(patterns ...string) Option {
+	patterns = append([]string(nil), patterns...)
+	return func(s *Source) { s.ignoreKeys = append(s.ignoreKeys, patterns...) }
+}
 
 // Timeout bounds ordinary reads and adds a network allowance to blocking queries.
 func Timeout(d time.Duration) Option { return func(s *Source) { s.timeout = d } }
@@ -76,6 +89,14 @@ func NewPrefix(client ListClient, prefix string, opts ...Option) *Source {
 
 func (s *Source) Name() string { return s.id }
 func (s *Source) valid() bool {
+	if len(s.ignoreKeys) > 0 && s.listClient == nil {
+		return false
+	}
+	for _, pattern := range s.ignoreKeys {
+		if _, err := path.Match(pattern, ""); err != nil {
+			return false
+		}
+	}
 	return (s.client != nil && s.decode != nil || s.listClient != nil) && s.key != "" && !strings.HasPrefix(s.key, "/") &&
 		s.limit > 0 && s.timeout > 0 && s.wait >= 0 &&
 		s.wait <= 10*time.Minute && s.timeout <= time.Duration(math.MaxInt64)-s.wait-s.wait/16
@@ -220,6 +241,9 @@ func (s *Source) decodePrefix(schema *sp.Schema, pairs api.KVPairs) (x.Layer, er
 			return x.Layer{}, errors.New("Consul returned key outside prefix")
 		}
 		suffix := strings.TrimPrefix(pair.Key, s.key)
+		if s.ignored(suffix) {
+			continue
+		}
 		if strings.HasSuffix(pair.Key, "/") && len(pair.Value) == 0 {
 			continue
 		}
@@ -248,4 +272,22 @@ func (s *Source) decodePrefix(schema *sp.Schema, pairs api.KVPairs) (x.Layer, er
 	layer.Locations = locations
 	layer.Revision = fmt.Sprintf("%x", hash.Sum(nil))
 	return layer, nil
+}
+
+func (s *Source) ignored(key string) bool {
+	if len(s.ignoreKeys) == 0 {
+		return false
+	}
+	for {
+		for _, pattern := range s.ignoreKeys {
+			if match, _ := path.Match(pattern, key); match {
+				return true
+			}
+		}
+		index := strings.LastIndexByte(key, '/')
+		if index < 0 {
+			return false
+		}
+		key = key[:index]
+	}
 }

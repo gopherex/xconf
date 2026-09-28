@@ -371,6 +371,50 @@ func TestLiteralMapPathsAndLocationInheritance(t *testing.T) {
 		t.Fatal(history)
 	}
 }
+
+func TestSnapshotOriginsCopiesAllPathsAndHistories(t *testing.T) {
+	base := x.SourceFunc{ID: "base", ReadFunc: func(context.Context, *sp.Schema) (x.Layer, error) {
+		return x.Layer{
+			Values:    map[string]any{"labels": map[string]any{"a.b/c~d": "first"}, "port": int64(8080)},
+			Revision:  "base-1",
+			Locations: map[string]x.Location{"/labels": {Name: "config.json", Line: 2, Column: 3}},
+		}, nil
+	}}
+	override := memory(t, "override", map[string]any{"port": int64(9090)})
+	s := load(t, schema(sp.MapOf("labels", sp.Str("value")), sp.Int64("port"), sp.Bool("enabled").Default(true)), base, override)
+	origins := s.Origins()
+	for _, path := range []x.Path{{"labels"}, {"labels", "a.b/c~d"}, {"port"}, {"enabled"}} {
+		got, exists := origins[path.String()]
+		if !exists || !reflect.DeepEqual(got, s.Explain(path...)) {
+			t.Fatalf("missing or different history at %s: %+v", path.String(), got)
+		}
+	}
+	if len(origins["/port"]) != 2 || origins["/port"][0].Source != "base" || origins["/port"][1].Source != "override" {
+		t.Fatalf("override history lost: %+v", origins["/port"])
+	}
+	if origins["/enabled"][0].Source != "schema" {
+		t.Fatal("default provenance lost")
+	}
+	key := "/labels/a.b~1c~0d"
+	want := x.Origin{Source: "base", Revision: "base-1", Operation: "set", Location: x.Location{Name: "config.json", Line: 2, Column: 3}}
+	if origins[key][0] != want {
+		t.Fatalf("escaped path metadata: %+v", origins[key])
+	}
+	origins[key][0].Source = "mutated"
+	origins[key][0].Location.Name = "mutated"
+	delete(origins, "/port")
+	origins["/injected"] = []x.Origin{{Source: "injected"}}
+	fresh := s.Origins()
+	if fresh[key][0] != want || s.Explain("labels", "a.b/c~d")[0] != want || len(fresh["/port"]) != 2 {
+		t.Fatal("map or slice mutation leaked into snapshot")
+	}
+	if _, exists := fresh["/injected"]; exists {
+		t.Fatal("injected path leaked into snapshot")
+	}
+	if empty := load(t, schema()).Origins(); empty == nil || len(empty) != 0 {
+		t.Fatalf("empty snapshot origins: %#v", empty)
+	}
+}
 func TestSlowSubscriberGetsLatestAndCancels(t *testing.T) {
 	var n atomic.Int64
 	n.Store(1)
