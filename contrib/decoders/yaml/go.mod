@@ -3,7 +3,7 @@ module github.com/gopherex/xconf/contrib/decoders/yaml
 go 1.25.7
 
 require (
-	github.com/gopherex/xconf v1.2.3
+	github.com/gopherex/xconf v1.3.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
