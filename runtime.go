@@ -3,6 +3,7 @@ package xconf
 import (
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"sort"
 	"strconv"
@@ -80,11 +81,19 @@ func openLoader(ctx context.Context, l *loader, check func(*Snapshot) error) (*R
 			}
 		}
 	}
-	initial, err := l.load(ctx)
-	if err == nil && check != nil {
-		err = check(initial)
+	// A load blocked only while sources are degraded waits for their recovery.
+	var held *DegradedError
+	initial, err := r.build(ctx)
+	for errors.As(err, &held) && ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+		case <-r.dirty:
+			initial, err = r.build(ctx)
+		}
 	}
-	if err == nil {
+	if held != nil && ctx.Err() != nil {
+		err = errors.Join(held, ctx.Err())
+	} else if err == nil {
 		err = ctx.Err()
 	}
 	if err != nil {
@@ -95,6 +104,13 @@ func openLoader(ctx context.Context, l *loader, check func(*Snapshot) error) (*R
 	r.current = initial
 	go r.run()
 	return r, nil
+}
+func (r *Runtime) build(ctx context.Context) (*Snapshot, error) {
+	s, err := r.loader.load(ctx)
+	if err == nil && r.check != nil {
+		err = withDegraded(r.check(s), s.degraded)
+	}
+	return s, err
 }
 func (r *Runtime) invalidate() {
 	select {
@@ -179,11 +195,17 @@ func copyEvent(e Event) Event {
 	for i, p := range e.Changed {
 		out.Changed[i] = append(Path(nil), p...)
 	}
-	var v *ValidationError
-	if errors.As(e.Err, &v) {
-		out.Err = &ValidationError{Result: proto.Clone(v.Result).(*sp.ValidationResult), Report: proto.Clone(v.Report).(*sp.ResolveReport)}
-	}
+	out.Err = copyErr(e.Err)
 	return out
+}
+func copyErr(err error) error {
+	switch v := err.(type) {
+	case *DegradedError:
+		return &DegradedError{maps.Clone(v.Degraded), copyErr(v.Err)}
+	case *ValidationError:
+		return &ValidationError{Result: proto.Clone(v.Result).(*sp.ValidationResult), Report: proto.Clone(v.Report).(*sp.ResolveReport)}
+	}
+	return err
 }
 func (r *Runtime) publish(e Event) {
 	for ch := range r.subscribers {
@@ -214,10 +236,7 @@ func (r *Runtime) Reload(ctx context.Context) (*Snapshot, error) {
 	stop := context.AfterFunc(r.ctx, cancel)
 	defer stop()
 	defer cancel()
-	next, err := r.loader.load(readCtx)
-	if err == nil && r.check != nil {
-		err = r.check(next)
-	}
+	next, err := r.build(readCtx)
 	if err == nil {
 		err = readCtx.Err()
 	}

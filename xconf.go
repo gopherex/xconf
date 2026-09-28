@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -102,6 +104,30 @@ func (e *ValidationError) Error() string {
 		items = append(items, v.GetPath()+": "+v.GetCode().String())
 	}
 	return "xconf: validation failed: " + strings.Join(items, "; ")
+}
+
+// DegradedError wraps a validation or typed decode failure that occurred while
+// sources served stale layers, so recovery may resolve it. Degraded holds their raw
+// errors (may contain secrets); Error() names the sources only.
+type DegradedError struct {
+	Degraded map[string]error
+	Err      error
+}
+
+func (e *DegradedError) Error() string {
+	names := make([]string, 0, len(e.Degraded))
+	for name := range e.Degraded {
+		names = append(names, strconv.Quote(name))
+	}
+	sort.Strings(names)
+	return e.Err.Error() + " (degraded sources: " + strings.Join(names, ", ") + ")"
+}
+func (e *DegradedError) Unwrap() error { return e.Err }
+func withDegraded(err error, degraded map[string]error) error {
+	if err == nil || len(degraded) == 0 {
+		return err
+	}
+	return &DegradedError{maps.Clone(degraded), err}
 }
 
 // Snapshot owns immutable state. Accessors returning mutable data clone it.
@@ -251,7 +277,8 @@ func LoadAs[T any](ctx context.Context, schema *sp.Schema, sources ...Source) (T
 		var zero T
 		return zero, err
 	}
-	return Decode[T](s)
+	v, err := Decode[T](s)
+	return v, withDegraded(err, s.degraded)
 }
 func (l *loader) load(ctx context.Context) (*Snapshot, error) {
 	state := &merger{values: map[string]any{}, origins: map[string][]Origin{}, schema: l.schema}
@@ -280,7 +307,7 @@ func (l *loader) load(ctx context.Context) (*Snapshot, error) {
 		return nil, fmt.Errorf("xconf: bake failed: %w", err)
 	}
 	if result.Blocking() {
-		return nil, &ValidationError{result, report}
+		return nil, withDegraded(&ValidationError{result, report}, degraded)
 	}
 	for _, event := range report.GetEvents() {
 		key := reportPath(event.GetPathSegments()).String()

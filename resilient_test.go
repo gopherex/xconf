@@ -3,7 +3,9 @@ package xconf_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -228,4 +230,118 @@ func TestResilientSameDegradedSetPublishesNothing(t *testing.T) {
 		t.Fatal(s, err)
 	}
 	quiet(t, ch)
+}
+
+func openAsync(ctx context.Context, s *sp.Schema, src ...x.Source) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		r, err := x.Open(ctx, s, src...)
+		if err == nil {
+			defer r.Close()
+			if v, _ := x.Decode[map[string]any](r.Snapshot()); v["n"] != int64(5) || len(r.Snapshot().Degraded()) != 0 {
+				err = fmt.Errorf("n=%v degraded=%v", v["n"], r.Snapshot().Degraded())
+			}
+		}
+		done <- err
+	}()
+	return done
+}
+
+func TestOpenHoldsWhileDegradedSourceBlocksValidation(t *testing.T) {
+	f := &flaky{}
+	f.set(5, errors.New("dial tcp: connection refused"), nil)
+	done := openAsync(context.Background(), schema(sp.Int64("n").Required()), resilient(f))
+	select {
+	case err := <-done:
+		t.Fatal("open returned while degraded", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	f.set(5, nil, nil)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("open did not recover")
+	}
+}
+
+func TestOpenDegradedDeadlineReportsSourcesWithoutLeaks(t *testing.T) {
+	before := runtime.NumGoroutine()
+	down := errors.New("password=hunter2 refused")
+	f := &flaky{}
+	f.set(5, down, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := x.Open(ctx, schema(sp.Int64("n").Required()), resilient(f))
+	var ve *x.ValidationError
+	var de *x.DegradedError
+	if !errors.As(err, &ve) || !errors.As(err, &de) || !errors.Is(de.Degraded["flaky"], down) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, `"flaky"`) || strings.Contains(msg, "hunter2") {
+		t.Fatal(msg)
+	}
+	if f.reads.Load() < 2 || f.stopped.Load() != 1 {
+		t.Fatal("no retry or watcher leaked", f.reads.Load(), f.stopped.Load())
+	}
+	eventually(t, func() bool { return runtime.NumGoroutine() <= before })
+}
+
+func TestOpenInvalidWithoutDegradedFailsFast(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := x.Open(ctx, schema(sp.Int64("n").Required()), memory(t, "memory", nil), resilient(&flaky{}))
+	var de *x.DegradedError
+	if err == nil || errors.As(err, &de) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
+		t.Fatal(err, time.Since(start))
+	}
+}
+
+func TestOpenAsHoldsDecodeWhileDegraded(t *testing.T) {
+	f := &flaky{}
+	f.set(1, errors.New("down"), nil)
+	type cfg struct {
+		N int8 `json:"n"`
+	}
+	done := make(chan error, 1)
+	go func() {
+		r, err := x.OpenAs[cfg](context.Background(), schema(sp.Int64("n")), memory(t, "memory", map[string]any{"n": 128}), resilient(f))
+		if err == nil {
+			defer r.Close()
+			if c, _ := r.Current(); c.N != 1 {
+				err = fmt.Errorf("n=%d", c.N)
+			}
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatal("open returned while degraded", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	f.set(1, nil, nil)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	_, err := x.LoadAs[cfg](context.Background(), schema(sp.Int64("n")), memory(t, "memory", map[string]any{"n": 128}), x.Resilient(&flaky{readErr: errors.New("down")}))
+	var de *x.DegradedError
+	if !errors.As(err, &de) || len(de.Degraded) != 1 {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadDegradedMissingRequiredCarriesDegraded(t *testing.T) {
+	down := errors.New("secret refused")
+	f := &flaky{}
+	f.set(5, down, nil)
+	start := time.Now()
+	_, err := x.Load(context.Background(), schema(sp.Int64("n").Required()), resilient(f))
+	var ve *x.ValidationError
+	var de *x.DegradedError
+	if !errors.As(err, &ve) || !errors.As(err, &de) || !errors.Is(de.Degraded["flaky"], down) || strings.Contains(err.Error(), "secret") || time.Since(start) > 500*time.Millisecond {
+		t.Fatal(err)
+	}
 }

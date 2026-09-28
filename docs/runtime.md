@@ -3,7 +3,8 @@
 ## Publication and subscriptions
 
 `Open` registers watchers before reading the initial configuration. `OpenAs[T]`
-also checks typed decoding before publishing. Initial failure aborts construction.
+also checks typed decoding before publishing. Initial failure aborts construction,
+unless a degraded source may be its cause (see below).
 A later read, merge, validation or decode failure retains the last valid snapshot
 and emits an error event containing it.
 
@@ -41,11 +42,27 @@ until a read succeeds. A failing `Watch` registration of the inner source is
 retried in the background and followed by an invalidation. All retries stop with
 `Close`. `ErrNotFound` counts as a failure; compose
 `xconf.Resilient(xconf.Optional(source))` to treat a missing key as empty instead.
-Required fields that only the stale source supplies still fail validation.
+
+A required value served only by a degraded source holds `Open` until the source
+recovers or `ctx` ends — use a `ctx` deadline to bound startup. Precisely: when the
+initial validation (or `OpenAs` typed decoding) fails while any source is degraded,
+`Open` and `OpenAs` keep the watchers registered and retry the initial load on every
+notification, including the wrapper's backoff retries, until it succeeds or `ctx`
+ends. On `ctx` end they stop all watchers and return the last failure joined with
+`ctx.Err()`. A failure with no degraded source still aborts immediately. `Load` and
+`LoadAs` never wait. The `Open` context is also the runtime's lifetime, so bound
+only startup with a timer that cancels it and is stopped once `Open` returns.
+
+Such failures, including failed reloads, are `*xconf.DegradedError`: `Degraded`
+holds the raw source errors (may contain secrets), `Unwrap` yields the underlying
+`*xconf.ValidationError` or decode error, and `Error()` adds only the source names.
 
 ```go
+ctx, cancel := context.WithCancel(ctx) // runtime lifetime
+startup := time.AfterFunc(time.Minute, cancel) // bounds a held Open
 runtime, err := xconf.Open(ctx, schema, defaults,
     xconf.Resilient(consul.NewPrefix(client.KV(), "apps/api")))
+startup.Stop()
 // ...
 for name, err := range runtime.Snapshot().Degraded() {
     log.Printf("config source %s degraded: %v", name, err)
