@@ -165,3 +165,65 @@ func TestIgnoreKeysRejectsInvalidSettingsBeforeIO(t *testing.T) {
 		t.Fatal("Watch silently accepted IgnoreKeys on exact-key source")
 	}
 }
+
+func TestPrefixAllowLivePaths(t *testing.T) {
+	var mu sync.Mutex
+	pairs := api.KVPairs{
+		{Key: "apps/api/server/limit", Value: []byte("10"), ModifyIndex: 1},
+		{Key: "apps/api/server/port", Value: []byte("invalid static port"), ModifyIndex: 1},
+		{Key: "apps/api/_revision", Value: []byte("1"), ModifyIndex: 1},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("X-Consul-Index", "1")
+		_ = json.NewEncoder(w).Encode(pairs)
+	}))
+	defer server.Close()
+	schema := sp.NewSchema(sp.ID("test", "live", sp.Ver(1, 0, 0))).Strict().Coerce().Fields(
+		sp.Object("server", sp.Int64("limit").Gte(1), sp.Int64("port").Gte(1)),
+	).MustBuild()
+	ctx := context.Background()
+	low, err := x.NewMemory("file", map[string]any{"server": map[string]any{"limit": 2, "port": 8080}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := source.NewPrefix(client(t, server).KV(), "apps/api", source.IgnoreKeys("_*"), source.WaitTime(0))
+	if _, err := x.Load(ctx, schema, low, raw); err == nil {
+		t.Fatal("unfiltered invalid static port accepted")
+	}
+	live := x.AllowPaths(raw, x.Path{"server", "limit"})
+	runtime, err := x.Open(ctx, schema, low, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	check := func(want int64) {
+		t.Helper()
+		snapshot, err := runtime.Reload(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := x.Decode[map[string]any](snapshot)
+		if err != nil || !reflect.DeepEqual(value["server"], map[string]any{"limit": want, "port": int64(8080)}) {
+			t.Fatalf("unexpected config: %+v, %v", value, err)
+		}
+		if history := snapshot.Explain("server", "port"); len(history) != 1 || history[0].Source != "file" {
+			t.Fatalf("Consul affected static path: %+v", history)
+		}
+	}
+	check(10)
+	history := runtime.Snapshot().Explain("server", "limit")
+	if len(history) < 2 || history[1].Source != raw.Name() || history[1].Location.Name != raw.Name()+":apps/api/server/limit" {
+		t.Fatalf("Consul provenance lost: %+v", history)
+	}
+	mu.Lock()
+	pairs[0].Value = []byte("20")
+	pairs[0].ModifyIndex = 2
+	mu.Unlock()
+	check(20)
+	mu.Lock()
+	pairs = pairs[1:] // A prefix with only excluded paths yields an empty layer.
+	mu.Unlock()
+	check(2)
+}

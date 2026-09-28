@@ -114,6 +114,12 @@ Removing an override reveals lower layers or defaults on the next successful rel
 Unknown fields follow schema strictness. Reflection enables coercion for textual
 sources; enable it explicitly in hand-built schemas.
 
+`xconf.AllowPaths(source, xconf.Path{"server", "limit"}, xconf.Path{"logging"})`
+restricts any source to selected paths and their subtrees, for example live settings
+from Consul over a local file. Other fields keep their lower-layer values. Paths
+use literal key segments; watch notifications and source provenance are preserved.
+See [path filtering](docs/sources.md#allowed-paths).
+
 ## Reload and subscriptions
 
 Using the imports and `Config` above:

@@ -5,6 +5,52 @@ later sources override earlier ones. Defaults, coercion and validation run once 
 merge. An unsuccessful reload retains the last valid snapshot and emits an error.
 No adapter writes to its backing store or manages application credentials.
 
+## Allowed paths
+
+`xconf.AllowPaths` wraps any source. For a Consul layer that may override only live
+settings:
+
+```go
+import consulconf "github.com/gopherex/xconf/contrib/sources/consul"
+
+remote := consulconf.NewPrefix(client.KV(), "apps/api",
+    consulconf.IgnoreKeys("_*"),
+)
+live := xconf.AllowPaths(remote,
+    xconf.Path{"server", "limit"},
+    xconf.Path{"logging"},
+)
+runtime, err := xconf.Open(ctx, schema, base, live)
+```
+
+`server.limit` and the whole `logging` subtree can come from Consul. Other fields
+keep values from `base` or schema defaults. The same wrapper works with file,
+HTTP, environment, memory and custom sources; the caller supplies the allowlist.
+
+- Each `Path` contains literal object/map keys: `Path{"labels", "a/b"}` selects
+  the map key `a/b`. Dots, slashes and `*` are not path separators or wildcards.
+- No paths allows nothing; an explicit empty `Path{}` allows everything. Duplicate
+  and overlapping paths are harmless. The wrapper captures the paths at construction.
+- A selected path includes all descendants, including null, zero, false and empty
+  containers. Missing paths contribute nothing. An unselected scalar/null ancestor
+  contributes nothing even if a child is allowed.
+- Lists must be selected whole. OneOf fields may be selected individually except
+  the discriminator: changing it requires allowing the entire OneOf object.
+- `Replace`/`Delete` edits inside selected subtrees retain their order. Edits on an
+  ancestor are restricted to selected subtrees. An ancestor `Replace` deletes
+  selected children absent from its replacement; excluded siblings remain intact.
+- Filtering runs after `Source.Read`, before merging and schema validation. It
+  does not suppress I/O, decoding or source path-conflict errors. `IgnoreKeys` can
+  still exclude Consul metadata before the adapter parses and assembles its layer.
+
+The wrapper forwards watch registration, cleanup, source name, errors and revision.
+Locations for retained paths and their ancestors remain available to provenance.
+A successful read with no matching paths is an empty layer, not `ErrNotFound`.
+Use `Optional` to handle a missing underlying source. Removing a live override
+reveals lower layers/defaults on the next successful reload. Revision changes may
+advance the snapshot version even when only excluded fields changed; consumers
+should use `Event.Changed` to determine which values changed.
+
 ## Documents and embedded defaults
 
 ```go

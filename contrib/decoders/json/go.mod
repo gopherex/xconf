@@ -9,7 +9,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/cbroglie/mustache v1.4.0 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
-	github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4 // indirect
+	github.com/gopherex/schemapb/go v0.0.0-20260928113412-04fd8b11d2cc // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
 	golang.org/x/mod v0.38.0 // indirect
