@@ -3,13 +3,13 @@ module github.com/gopherex/xconf/contrib/sources/json
 go 1.25.7
 
 require (
-	github.com/gopherex/xconf v1.2.2
-	github.com/gopherex/xconf/contrib/sources/file v1.2.2
+	github.com/gopherex/xconf v1.2.3
+	github.com/gopherex/xconf/contrib/sources/file v1.2.3
 )
 
 require (
 	github.com/gopherex/schemapb/go v0.0.0-20260928113412-04fd8b11d2cc
-	github.com/gopherex/xconf/contrib/decoders/json v1.2.2
+	github.com/gopherex/xconf/contrib/decoders/json v1.2.3
 )
 
 require (

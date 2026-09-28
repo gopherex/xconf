@@ -4,12 +4,12 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v0.0.0-20260928113412-04fd8b11d2cc
-	github.com/gopherex/xconf v1.2.2
+	github.com/gopherex/xconf v1.2.3
 	github.com/nats-io/nats.go v1.52.0
 )
 
 require (
-	github.com/gopherex/xconf/contrib/decoders/json v1.2.2
+	github.com/gopherex/xconf/contrib/decoders/json v1.2.3
 	github.com/nats-io/nats-server/v2 v2.14.0
 )
 
