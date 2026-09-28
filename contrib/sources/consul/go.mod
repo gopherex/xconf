@@ -4,8 +4,8 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4
-	github.com/gopherex/xconf v1.2.1
-	github.com/gopherex/xconf/contrib/decoders/json v1.2.1
+	github.com/gopherex/xconf v1.2.2
+	github.com/gopherex/xconf/contrib/decoders/json v1.2.2
 	github.com/hashicorp/consul/api v1.33.4
 	golang.org/x/time v0.12.0
 )
@@ -18,7 +18,7 @@ require (
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
-	github.com/gopherex/xconf/contrib/sources/env v1.2.1
+	github.com/gopherex/xconf/contrib/sources/env v1.2.2
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-hclog v1.5.0 // indirect

@@ -4,7 +4,7 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4
-	github.com/gopherex/xconf v1.2.1
+	github.com/gopherex/xconf v1.2.2
 	github.com/spf13/pflag v1.0.10
 )
 

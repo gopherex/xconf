@@ -4,8 +4,8 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4
-	github.com/gopherex/xconf v1.2.1
-	github.com/gopherex/xconf/contrib/decoders/json v1.2.1
+	github.com/gopherex/xconf v1.2.2
+	github.com/gopherex/xconf/contrib/decoders/json v1.2.2
 	github.com/hashicorp/vault/api v1.23.0
 )
 

@@ -7,10 +7,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.4
 	github.com/aws/smithy-go v1.28.1
 	github.com/gopherex/schemapb/go v0.0.0-20260928000336-b5fc4d954ff4
-	github.com/gopherex/xconf v1.2.1
+	github.com/gopherex/xconf v1.2.2
 )
 
-require github.com/gopherex/xconf/contrib/decoders/json v1.2.1
+require github.com/gopherex/xconf/contrib/decoders/json v1.2.2
 
 require (
 	cel.dev/expr v0.25.1 // indirect
