@@ -4,10 +4,10 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v0.0.0-20260928135944-4f0aa1af98e5
-	github.com/gopherex/xconf v1.3.0
+	github.com/gopherex/xconf v1.4.0
 )
 
-require github.com/gopherex/xconf/contrib/decoders/json v1.3.0
+require github.com/gopherex/xconf/contrib/decoders/json v1.4.0
 
 require (
 	cel.dev/expr v0.25.1 // indirect

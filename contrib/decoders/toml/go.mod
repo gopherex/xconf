@@ -4,7 +4,7 @@ go 1.25.7
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/gopherex/xconf v1.3.0
+	github.com/gopherex/xconf v1.4.0
 )
 
 require (
