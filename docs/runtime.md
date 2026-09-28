@@ -25,6 +25,33 @@ should be deterministic. `Close` cancels reads, stops watchers and waits for shu
 sources must honor context. Publication is process-local, without transactions
 across remote stores. Application component reconfiguration remains caller-owned.
 
+## Unavailable remote sources
+
+`xconf.Resilient(source)` keeps a remote source such as Consul in effect while it
+is down, at startup or later. Any `Read` error returns the last good layer (empty
+before the first success) with `Layer.Stale` set to the error, so `Open` and
+reloads do not fail because of that source. `snapshot.Degraded()` maps each stale
+source name to its raw error; it is empty when all sources are healthy. The raw
+errors may contain secrets, and `SourceError` text still omits them.
+
+A source becoming stale or recovering publishes a normal event; a different error
+from a source that is already stale does not. While stale, the wrapper invalidates
+the runtime with exponential backoff (`xconf.Backoff(min, max)`, default 1s..30s)
+until a read succeeds. A failing `Watch` registration of the inner source is
+retried in the background and followed by an invalidation. All retries stop with
+`Close`. `ErrNotFound` counts as a failure; compose
+`xconf.Resilient(xconf.Optional(source))` to treat a missing key as empty instead.
+Required fields that only the stale source supplies still fail validation.
+
+```go
+runtime, err := xconf.Open(ctx, schema, defaults,
+    xconf.Resilient(consul.NewPrefix(client.KV(), "apps/api")))
+// ...
+for name, err := range runtime.Snapshot().Degraded() {
+    log.Printf("config source %s degraded: %v", name, err)
+}
+```
+
 ## Provenance
 
 `snapshot.Origins()` returns `map[string][]xconf.Origin` for all recorded paths,

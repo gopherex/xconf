@@ -196,7 +196,8 @@ func (r *Runtime) publish(e Event) {
 }
 
 // Reload serializes full reads and keeps the last valid snapshot on every failure.
-// A successful rebuild with identical values and provenance keeps its version.
+// A successful rebuild with identical values, provenance and degraded sources
+// keeps its version; a source becoming stale or recovering publishes an event.
 func (r *Runtime) Reload(ctx context.Context) (*Snapshot, error) {
 	if r.ctx.Err() != nil {
 		return r.Snapshot(), ErrClosed
@@ -231,7 +232,7 @@ func (r *Runtime) Reload(ctx context.Context) (*Snapshot, error) {
 		return r.current, err
 	}
 	old := r.current
-	if proto.Equal(old.baked.Values, next.baked.Values) && reflect.DeepEqual(old.origins, next.origins) && reflect.DeepEqual(old.revisions, next.revisions) && proto.Equal(old.validation, next.validation) {
+	if proto.Equal(old.baked.Values, next.baked.Values) && reflect.DeepEqual(old.origins, next.origins) && reflect.DeepEqual(old.revisions, next.revisions) && proto.Equal(old.validation, next.validation) && sameKeys(old.degraded, next.degraded) {
 		if r.failed {
 			r.failed = false
 			r.publish(Event{Snapshot: old})
@@ -243,6 +244,19 @@ func (r *Runtime) Reload(ctx context.Context) (*Snapshot, error) {
 	r.current = next
 	r.publish(Event{Snapshot: next, Changed: changedPaths(old.baked.Values, next.baked.Values)})
 	return next, nil
+}
+
+// sameKeys compares degraded sources, ignoring volatile error text.
+func sameKeys(a, b map[string]error) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 func changedPaths(a, b *sp.StructValue) []Path {
 	var out []Path

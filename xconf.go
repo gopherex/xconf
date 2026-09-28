@@ -55,6 +55,9 @@ type Layer struct {
 	Revision  string
 	Locations map[string]Location // keys are JSON pointers
 	Edits     []Edit              // applied in order after Values
+	// Stale reports a failing source: the layer is its last good one (or empty).
+	// The raw error is exposed only through Snapshot.Degraded.
+	Stale error
 }
 
 // Source reads a complete partial layer. Read must honor ctx and return owned
@@ -108,6 +111,7 @@ type Snapshot struct {
 	report     *sp.ResolveReport
 	origins    map[string][]Origin
 	revisions  map[string]string
+	degraded   map[string]error
 	version    uint64
 	loadedAt   time.Time
 }
@@ -122,6 +126,16 @@ func (s *Snapshot) Validation() *sp.ValidationResult {
 func (s *Snapshot) Revisions() map[string]string {
 	m := map[string]string{}
 	for k, v := range s.revisions {
+		m[k] = v
+	}
+	return m
+}
+
+// Degraded returns the raw errors of sources serving stale layers, keyed by source
+// name. It is empty when every source is healthy. Errors may contain secrets.
+func (s *Snapshot) Degraded() map[string]error {
+	m := map[string]error{}
+	for k, v := range s.degraded {
 		m[k] = v
 	}
 	return m
@@ -241,7 +255,7 @@ func LoadAs[T any](ctx context.Context, schema *sp.Schema, sources ...Source) (T
 }
 func (l *loader) load(ctx context.Context) (*Snapshot, error) {
 	state := &merger{values: map[string]any{}, origins: map[string][]Origin{}, schema: l.schema}
-	revisions := map[string]string{}
+	revisions, degraded := map[string]string{}, map[string]error{}
 	for _, source := range l.sources {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -254,6 +268,9 @@ func (l *loader) load(ctx context.Context) (*Snapshot, error) {
 			return nil, &SourceError{source.Name(), "merge", err}
 		}
 		revisions[source.Name()] = layer.Revision
+		if layer.Stale != nil {
+			degraded[source.Name()] = layer.Stale
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -269,5 +286,5 @@ func (l *loader) load(ctx context.Context) (*Snapshot, error) {
 		key := reportPath(event.GetPathSegments()).String()
 		state.origins[key] = append(state.origins[key], Origin{Source: "schema", Operation: event.GetOperation().String()})
 	}
-	return &Snapshot{baked: baked, validation: result, report: report, origins: state.origins, revisions: revisions, loadedAt: time.Now()}, nil
+	return &Snapshot{baked: baked, validation: result, report: report, origins: state.origins, revisions: revisions, degraded: degraded, loadedAt: time.Now()}, nil
 }

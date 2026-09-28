@@ -147,3 +147,121 @@ func (p *polling) Watch(ctx context.Context, notify func()) (func(), error) {
 	}()
 	return func() { cancel(); <-done }, nil
 }
+
+// Resilient keeps a remote source in effect while it is unavailable. Any Read
+// error yields the last good layer (or an empty one) with Layer.Stale set, so the
+// source never fails Open or Reload; Snapshot.Degraded reports it. While stale, the
+// wrapper invalidates the runtime with exponential backoff until a Read succeeds.
+// A failing inner Watch registration is retried in the background, followed by an
+// invalidation to cover changes missed before it. ErrNotFound is a failure too;
+// compose Resilient(Optional(source)) to treat a missing source as empty instead.
+func Resilient(source Source, opts ...ResilientOption) Source {
+	r := &resilient{Source: source, lo: time.Second, hi: 30 * time.Second, wakes: map[chan struct{}]struct{}{}}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
+}
+
+type ResilientOption func(*resilient)
+
+// Backoff bounds the retry delay, doubling from min to max. Default 1s..30s.
+func Backoff(min, max time.Duration) ResilientOption {
+	return func(r *resilient) { r.lo, r.hi = min, max }
+}
+
+type resilient struct {
+	Source
+	lo, hi  time.Duration
+	mu      sync.Mutex
+	last    Layer
+	failing bool
+	wakes   map[chan struct{}]struct{}
+}
+
+func (r *resilient) Read(ctx context.Context, schema *sp.Schema) (Layer, error) {
+	l, err := r.Source.Read(ctx, schema)
+	if err == nil {
+		var good Layer
+		if good, err = cloneLayer(l); err == nil {
+			good.Stale = nil
+			r.mu.Lock()
+			r.last, r.failing = good, false
+			r.mu.Unlock()
+			return l, nil
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failing = true
+	for wake := range r.wakes {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+	l, _ = cloneLayer(r.last) // cloned successfully before
+	l.Stale = err
+	return l, nil
+}
+func (r *resilient) stale() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.failing }
+func (r *resilient) Watch(ctx context.Context, notify func()) (func(), error) {
+	if r.lo <= 0 || r.hi < r.lo {
+		return nil, errors.New("resilient backoff requires 0 < min <= max")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	wake := make(chan struct{}, 1)
+	r.mu.Lock()
+	r.wakes[wake] = struct{}{}
+	r.mu.Unlock()
+	done := make(chan struct{})
+	var stopInner func()
+	go func() {
+		defer close(done)
+		watcher, unregistered := r.Source.(Watcher)
+		delay := r.lo
+		for {
+			register := unregistered
+			if register {
+				stop, err := watcher.Watch(ctx, notify)
+				if err == nil {
+					stopInner, unregistered, delay = stop, false, r.lo
+					notify()
+					continue
+				}
+				if stop != nil {
+					stop()
+				}
+			} else if !r.stale() {
+				delay = r.lo
+				select {
+				case <-ctx.Done():
+					return
+				case <-wake:
+				}
+				continue
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			if !register {
+				notify()
+			}
+			delay = min(delay*2, r.hi)
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+		r.mu.Lock()
+		delete(r.wakes, wake)
+		r.mu.Unlock()
+		if stopInner != nil {
+			stopInner()
+		}
+	}, nil
+}

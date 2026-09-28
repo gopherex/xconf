@@ -155,6 +155,15 @@ Initial failure aborts `OpenAs`; later failures retain the last valid snapshot.
 Slow subscribers receive only the latest event, so reconcile full state.
 See [runtime semantics and custom sources](docs/runtime.md).
 
+`xconf.Resilient(source)` keeps a remote source working while it is unavailable,
+at startup or later: a failed read serves the last good layer (or an empty one)
+with `Layer.Stale` set, and never fails `Open`. `event.Snapshot.Degraded()` maps
+stale source names to their raw errors (may contain secrets); becoming stale or
+recovering publishes an event. Reads and a failing watch registration retry with
+`xconf.Backoff(min, max)` (default 1s..30s) until `Close`. Use
+`xconf.Resilient(xconf.Optional(source))` so a missing key is empty, not degraded.
+See [unavailable remote sources](docs/runtime.md#unavailable-remote-sources).
+
 ## Sources: where to load
 
 Module paths start with `github.com/gopherex/xconf/contrib/sources/`.
@@ -211,6 +220,8 @@ The shared `internal/document` helper is private to the root module.
 | `OpenAs[T](ctx, schema, sources...)` | Runtime with typed checks before publication |
 | `Open(ctx, schema, sources...)` | Untyped runtime |
 | `New(schema, compileOptions...)` | Reusable compiled loader |
+| `Resilient(source, Backoff(min, max))` | Source serving its last good layer while failing |
+| `snapshot.Degraded()` | Raw errors of stale sources, keyed by name |
 
 `snapshot.Explain("server", "port")` returns one field's provenance;
 `snapshot.Origins()` returns a copied `map[string][]Origin` for all JSON-pointer paths.
