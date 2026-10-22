@@ -103,8 +103,22 @@ type Labels struct {
 
 Quote strings containing semicolons or unbalanced brackets. Repeated attributes,
 map attributes and message attributes use ProtoJSON syntax. For `oneof` choices,
-the default is a typed schemapb value, as shown above. A string with `in=[...]`
+the default is a typed schemapb value, as shown above; declared integer options
+also accept the shorthand `default=2`. A string with `in=[...]`
 remains a string and accepts an ordinary string default.
+
+## Protobuf enums
+
+Generated protobuf enum fields automatically become choices with numeric values
+and labels from their protobuf descriptor (`TYPE_FLOAT`, for example). This also
+works inside slices, arrays and map values, where struct tags are unavailable.
+You do not need to put the enum name in the field description. `WithType` can
+provide application-specific labels or a different schema.
+
+`schemapb:"default=2"` selects a declared integer default. Env/flags input `"2"`
+is coerced to option `2`; unknown values fail validation. Labels are display-only.
+An explicitly declared string option `"2"` has priority over integer coercion.
+Hand-built schemas must enable `Coerce()`; reflected schemas already do.
 
 ## Supported `validate` tags
 

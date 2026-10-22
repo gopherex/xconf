@@ -3,9 +3,10 @@ module github.com/gopherex/xconf/contrib/sources/flags
 go 1.25.7
 
 require (
-	github.com/gopherex/schemapb/go v0.0.0-20260928135944-4f0aa1af98e5
+	github.com/gopherex/schemapb/go v1.9.8
 	github.com/gopherex/xconf v1.4.0
 	github.com/gopherex/xconf/contrib/sources/env v1.4.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -19,7 +20,6 @@ require (
 	golang.org/x/text v0.22.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240826202546-f6391c0de4c7 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 )
 
 replace github.com/gopherex/xconf => ../../..

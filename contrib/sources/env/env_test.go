@@ -5,10 +5,49 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/types/descriptorpb"
+
 	sp "github.com/gopherex/schemapb/go/schemapb"
 	x "github.com/gopherex/xconf"
 	"github.com/gopherex/xconf/contrib/sources/env"
 )
+
+func TestProtobufEnumChoicesFromEnvironment(t *testing.T) {
+	type config struct {
+		Mode  descriptorpb.FieldDescriptorProto_Type   `json:"mode"`
+		Modes []descriptorpb.FieldDescriptorProto_Type `json:"modes"`
+	}
+	s, err := sp.ReflectType[config](sp.ID("test", "enum_env", sp.Ver(1, 0, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []*sp.Schema_Field{s.Fields[0], s.Fields[1].GetList().GetItems()[0]} {
+		if options := field.GetChoice().GetOptions(); len(options) == 0 || options[1].GetLabel() != "TYPE_FLOAT" {
+			t.Fatalf("enum labels missing: %v", field)
+		}
+	}
+	for _, raw := range []string{`[1,2]`, `["1","2"]`, "1,2"} {
+		opts := []env.Option{env.Environment([]string{"MODE=2", "MODES=" + raw})}
+		if raw == "1,2" {
+			opts = append(opts, env.Split("MODES", ","))
+		}
+		snapshot, err := x.Load(context.Background(), s, env.New(opts...))
+		if err != nil {
+			t.Fatal(raw, err)
+		}
+		got, err := x.Decode[config](snapshot)
+		if err != nil || got.Mode != descriptorpb.FieldDescriptorProto_TYPE_FLOAT || len(got.Modes) != 2 || got.Modes[0] != descriptorpb.FieldDescriptorProto_TYPE_DOUBLE || got.Modes[1] != got.Mode {
+			t.Fatalf("enum env %s: %+v %v", raw, got, err)
+		}
+		history := snapshot.Explain("mode")
+		if len(history) != 2 || history[1].Operation != sp.ResolveOperation_RESOLVE_OPERATION_COERCED.String() {
+			t.Fatalf("enum coercion provenance missing: %+v", history)
+		}
+	}
+	if _, err := x.Load(context.Background(), s, env.New(env.Environment([]string{"MODE=999", "MODES=[1]"}))); err == nil {
+		t.Fatal("undeclared enum value accepted")
+	}
+}
 
 func schema(fields ...sp.FieldDef) *sp.Schema {
 	return sp.NewSchema(sp.ID("test", "env", sp.Ver(1, 0, 0))).Coerce().Fields(fields...).MustBuild()

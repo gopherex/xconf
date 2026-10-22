@@ -3,7 +3,7 @@ module github.com/gopherex/xconf
 go 1.25.7
 
 require (
-	github.com/gopherex/schemapb/go v0.0.0-20260928135944-4f0aa1af98e5
+	github.com/gopherex/schemapb/go v1.9.8
 	google.golang.org/protobuf v1.36.11
 )
 

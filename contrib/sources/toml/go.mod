@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/gopherex/schemapb/go v0.0.0-20260928135944-4f0aa1af98e5
+	github.com/gopherex/schemapb/go v1.9.8
 	github.com/gopherex/xconf/contrib/decoders/toml v1.4.0
 )
 
