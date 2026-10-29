@@ -2,6 +2,7 @@ package env_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +86,24 @@ func TestAmbiguousAndOverlappingInput(t *testing.T) {
 		if err == nil {
 			t.Fatalf("case %d accepted", i)
 		}
+	}
+}
+// An error names the variable, never its value; an empty container variable
+// is unset, so a lower layer's value stays.
+func TestNamedErrorsAndEmptyContainers(t *testing.T) {
+	s := schema(sp.List("keys", sp.Str("")), sp.MapOf("labels", sp.Str("value")), sp.Str("token"))
+	_, err := x.Load(context.Background(), s, env.New(env.Prefix("APP_"), env.Environment([]string{`APP_KEYS=["secret-jwk`})))
+	if err == nil || !strings.HasSuffix(err.Error(), `source "env": read failed: invalid JSON in APP_KEYS`) || strings.Contains(err.Error(), "secret") {
+		t.Fatal(err)
+	}
+	file, err := x.NewMemory("file", map[string]any{"keys": []any{"k1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := x.LoadAs[map[string]any](context.Background(), s, file,
+		env.New(env.Prefix("APP_"), env.Environment([]string{"APP_KEYS=", "APP_LABELS=", "APP_TOKEN="})))
+	if err != nil || len(got["keys"].([]any)) != 1 || got["keys"].([]any)[0] != "k1" || got["labels"] != nil || got["token"] != "" {
+		t.Fatal(got, err)
 	}
 }
 func TestAbsentInjectedEnvironmentDoesNotReadOS(t *testing.T) {

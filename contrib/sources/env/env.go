@@ -68,12 +68,15 @@ func (s *Source) Read(ctx context.Context, schema *sp.Schema) (x.Layer, error) {
 			vars[k] = v
 		}
 	}
-	return s.decode(schema, vars)
+	layer, err := s.decode(schema, vars)
+	return layer, x.Public(err)
 }
 
 // Decode maps already parsed environment variables, for adapters such as dotenv.
+// Its errors name variables, never their values (xconf.Public).
 func Decode(schema *sp.Schema, vars map[string]string, opts ...Option) (x.Layer, error) {
-	return New(opts...).decode(schema, vars)
+	layer, err := New(opts...).decode(schema, vars)
+	return layer, x.Public(err)
 }
 
 type binding struct {
@@ -204,6 +207,11 @@ func (s *Source) decode(schema *sp.Schema, vars map[string]string) (x.Layer, err
 			}
 			value = list
 		} else if b.container {
+			if raw == "" {
+				// An empty container variable is unset: orchestrators render an
+				// absent optional variable as empty.
+				continue
+			}
 			d := json.NewDecoder(bytes.NewBufferString(raw))
 			d.UseNumber()
 			if err := d.Decode(&value); err != nil {

@@ -197,7 +197,9 @@ values directly.
 
 Environment paths map to names such as `server.port` → `APP_SERVER_PORT`.
 `env.Bind` supplies explicit mappings; `env.Strict()` rejects unknown prefixed
-names. Containers use JSON unless `env.Split` is configured. Remote clients,
+names. Containers use JSON unless `env.Split` is configured; an empty container
+variable is unset, as orchestrators render an absent optional variable. Errors
+name the variable, never its value, and show in the `SourceError` text. Remote clients,
 authentication and TLS belong to the caller. See [source options](docs/sources.md).
 
 ## Decoders: how to parse

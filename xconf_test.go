@@ -122,6 +122,15 @@ func TestOptionalAndErrors(t *testing.T) {
 	if !errors.Is(err, cause) || strings.Contains(err.Error(), "sensitive") {
 		t.Fatal(err)
 	}
+	named := errors.New("invalid JSON in APP_TOKEN")
+	public := x.SourceFunc{ID: "public", ReadFunc: func(context.Context, *sp.Schema) (x.Layer, error) { return x.Layer{}, x.Public(named) }}
+	_, err = x.Load(context.Background(), s, public)
+	if !errors.Is(err, named) || !strings.HasSuffix(err.Error(), `source "public": read failed: invalid JSON in APP_TOKEN`) {
+		t.Fatal(err)
+	}
+	if x.Public(nil) != nil {
+		t.Fatal("Public(nil) is not nil")
+	}
 	if _, err = x.Load(context.Background(), s, good, good); err == nil {
 		t.Fatal("duplicate name accepted")
 	}

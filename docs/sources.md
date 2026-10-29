@@ -221,7 +221,7 @@ source = consulconf.NewPrefix(consulClient.KV(), "apps/api/",
 The trailing slash is normalized. Values use the env adapter's schema-aware
 encoding: strings for scalars, JSON with exact numbers for containers. Enable
 schema coercion for textual scalar types. Empty directory markers are ignored;
-empty leaf values remain present. Parent/child conflicts, duplicate paths, empty
+empty scalar values remain present, an empty container value is unset. Parent/child conflicts, duplicate paths, empty
 path segments and keys outside the selected prefix fail the read. A prefix with
 no value keys is `ErrNotFound`. Removing a key reveals lower layers on reload.
 At most 1024 entries and `MaxBytes` total value bytes are accepted.

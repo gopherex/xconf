@@ -80,17 +80,37 @@ type Watcher interface {
 var ErrNotFound = errors.New("xconf: source not found")
 var ErrClosed = errors.New("xconf: runtime closed")
 
-// SourceError omits provider error text, which may contain secrets.
-// The original error remains available via errors.Is/As/Unwrap.
+// SourceError omits provider error text, which may contain secrets, unless the
+// cause is a PublicError. The original error remains available via errors.Is/As/Unwrap.
 type SourceError struct {
 	Source, Stage string
 	Cause         error
 }
 
 func (e *SourceError) Error() string {
-	return fmt.Sprintf("xconf: source %q: %s failed", e.Source, e.Stage)
+	msg := fmt.Sprintf("xconf: source %q: %s failed", e.Source, e.Stage)
+	if public := (*PublicError)(nil); errors.As(e.Cause, &public) {
+		msg += ": " + public.Error()
+	}
+	return msg
 }
 func (e *SourceError) Unwrap() error { return e.Cause }
+
+// PublicError is a source error whose text names keys, paths or variables but
+// never holds a configuration value, so SourceError shows it.
+type PublicError struct{ Err error }
+
+func (e *PublicError) Error() string { return e.Err.Error() }
+func (e *PublicError) Unwrap() error { return e.Err }
+
+// Public marks err, whose text holds no configuration value, as safe to show in
+// SourceError; nil stays nil.
+func Public(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &PublicError{Err: err}
+}
 
 // ValidationError carries diagnostics without including input values in Error().
 type ValidationError struct {

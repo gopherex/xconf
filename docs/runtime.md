@@ -33,7 +33,10 @@ is down, at startup or later. Any `Read` error returns the last good layer (empt
 before the first success) with `Layer.Stale` set to the error, so `Open` and
 reloads do not fail because of that source. `snapshot.Degraded()` maps each stale
 source name to its raw error; it is empty when all sources are healthy. The raw
-errors may contain secrets, and `SourceError` text still omits them.
+errors may contain secrets, and `SourceError` text still omits them. A source
+marks an error that names keys or variables but holds no value with
+`xconf.Public(err)`; `SourceError` text then ends with it, e.g.
+`xconf: source "env:APP_": read failed: invalid JSON in APP_HOSTS`.
 
 A source becoming stale or recovering publishes a normal event; a different error
 from a source that is already stale does not. While stale, the wrapper invalidates
