@@ -4,8 +4,8 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v1.9.8
-	github.com/gopherex/xconf v1.4.1
-	github.com/gopherex/xconf/contrib/decoders/json v1.4.1
+	github.com/gopherex/xconf v1.4.2
+	github.com/gopherex/xconf/contrib/decoders/json v1.4.2
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
 )

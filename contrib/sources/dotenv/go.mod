@@ -4,9 +4,9 @@ go 1.25.7
 
 require (
 	github.com/gopherex/schemapb/go v1.9.8
-	github.com/gopherex/xconf v1.4.1
-	github.com/gopherex/xconf/contrib/sources/env v1.4.1
-	github.com/gopherex/xconf/contrib/sources/file v1.4.1
+	github.com/gopherex/xconf v1.4.2
+	github.com/gopherex/xconf/contrib/sources/env v1.4.2
+	github.com/gopherex/xconf/contrib/sources/file v1.4.2
 	github.com/joho/godotenv v1.5.1
 )
 

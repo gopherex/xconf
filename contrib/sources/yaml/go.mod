@@ -3,13 +3,13 @@ module github.com/gopherex/xconf/contrib/sources/yaml
 go 1.25.7
 
 require (
-	github.com/gopherex/xconf v1.4.1
-	github.com/gopherex/xconf/contrib/sources/file v1.4.1
+	github.com/gopherex/xconf v1.4.2
+	github.com/gopherex/xconf/contrib/sources/file v1.4.2
 )
 
 require (
 	github.com/gopherex/schemapb/go v1.9.8
-	github.com/gopherex/xconf/contrib/decoders/yaml v1.4.1
+	github.com/gopherex/xconf/contrib/decoders/yaml v1.4.2
 )
 
 require (
